@@ -58,6 +58,14 @@ structure Variable where
   name: String := ""
   /-- The name displayed to the user -/
   userName: String
+  /-- Stable zero-based position in the complete Lean local context. -/
+  contextIndex?: Option Nat := .none
+  /-- Binder role as understood by Lean's elaborator. -/
+  binderRole?: Option String := .none
+  /-- Whether this declaration supplies a typeclass instance. -/
+  isInstance: Bool := false
+  /-- Whether this declaration is a local let binding. -/
+  isLet: Bool := false
   /-- Does the name contain a dagger -/
   isInaccessible: Bool := false
   type?: Option Expression  := .none

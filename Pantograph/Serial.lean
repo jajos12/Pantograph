@@ -358,26 +358,40 @@ def serializeGoal (options: @&Protocol.Options) (goal: MVarId) (mvarDecl: Metava
     let modelCtx ← mkModelSexpContext lctx
     let ppVarNameOnly (localDecl: LocalDecl): MetaM Protocol.Variable := do
       match localDecl with
-      | .cdecl _ fvarId userName _ _ _ =>
+      | .cdecl _ fvarId userName _ binderInfo _ =>
         return {
           name := ofName fvarId.name,
           userName:= ofName userName.simpMacroScopes,
+          contextIndex? := if options.printExprModelAST then
+            modelCtx.fvarIndices.find? fvarId else none
+          binderRole? := if options.printExprModelAST then
+            some (modelBinderInfoSexp binderInfo) else none
+          isInstance := options.printExprModelAST && binderInfo == .instImplicit
           isInaccessible := userName.isInaccessibleUserName
         }
       | .ldecl _ fvarId userName _ _ _ _ => do
         return {
           name := ofName fvarId.name,
           userName := toString userName.simpMacroScopes,
+          contextIndex? := if options.printExprModelAST then
+            modelCtx.fvarIndices.find? fvarId else none
+          binderRole? := if options.printExprModelAST then some ":let" else none
+          isLet := options.printExprModelAST
           isInaccessible := userName.isInaccessibleUserName
         }
     let ppVar (localDecl : LocalDecl) : MetaM Protocol.Variable := do
       match localDecl with
-      | .cdecl _ fvarId userName type _ _ =>
+      | .cdecl _ fvarId userName type binderInfo _ =>
         let userName := userName.simpMacroScopes
         let type ← instantiate type
         return {
           name := ofName fvarId.name,
           userName:= ofName userName,
+          contextIndex? := if options.printExprModelAST then
+            modelCtx.fvarIndices.find? fvarId else none
+          binderRole? := if options.printExprModelAST then
+            some (modelBinderInfoSexp binderInfo) else none
+          isInstance := options.printExprModelAST && binderInfo == .instImplicit
           isInaccessible := userName.isInaccessibleUserName
           type? := .some (← serializeExpression options type modelCtx)
         }
@@ -392,6 +406,10 @@ def serializeGoal (options: @&Protocol.Options) (goal: MVarId) (mvarDecl: Metava
         return {
           name := ofName fvarId.name,
           userName:= ofName userName,
+          contextIndex? := if options.printExprModelAST then
+            modelCtx.fvarIndices.find? fvarId else none
+          binderRole? := if options.printExprModelAST then some ":let" else none
+          isLet := options.printExprModelAST
           isInaccessible := userName.isInaccessibleUserName
           type? := .some (← serializeExpression options type modelCtx)
           value? := value?
