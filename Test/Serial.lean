@@ -72,11 +72,11 @@ def test_model_sexp_of_elab (env: Environment): IO LSpec.TestSeq := do
   let entries: List (String × String) := [
     (
       "@Eq Nat 1 1",
-      "(:app (:c Eq) (:arg :implicit-type (:c Nat)) (:arg :explicit (:app (:c OfNat.ofNat) (:arg :implicit-type (:c Nat)) (:arg :explicit (:lit 1)) (:arg :instance (:instance-of (:app (:c OfNat) (:arg :explicit (:c Nat)) (:arg :explicit (:lit 1))))))) (:arg :explicit (:app (:c OfNat.ofNat) (:arg :implicit-type (:c Nat)) (:arg :explicit (:lit 1)) (:arg :instance (:instance-of (:app (:c OfNat) (:arg :explicit (:c Nat)) (:arg :explicit (:lit 1))))))))"
+      "(:app (:c Eq) (:arg :implicit-type 0 (:c Nat)) (:arg :explicit 1 (:app (:c OfNat.ofNat) (:arg :implicit-type 0 (:c Nat)) (:arg :explicit 1 (:lit 1)) (:arg :instance 2 (:instance-of (:app (:c OfNat) (:arg :explicit 0 (:c Nat)) (:arg :explicit 1 (:lit 1))))))) (:arg :explicit 2 (:app (:c OfNat.ofNat) (:arg :implicit-type 0 (:c Nat)) (:arg :explicit 1 (:lit 1)) (:arg :instance 2 (:instance-of (:app (:c OfNat) (:arg :explicit 0 (:c Nat)) (:arg :explicit 1 (:lit 1))))))))"
     ),
     (
       "@Eq.mp True True (Eq.refl True) True.intro",
-      "(:app (:c Eq.mp) (:arg :implicit-type (:c True)) (:arg :implicit-type (:c True)) (:arg :proof (:proof-of (:app (:c Eq) (:arg :implicit-type (:sort Prop)) (:arg :explicit (:c True)) (:arg :explicit (:c True))))) (:arg :proof (:proof-of (:c True))))"
+      "(:app (:c Eq.mp) (:arg :implicit-type 0 (:c True)) (:arg :implicit-type 1 (:c True)) (:arg :proof 2 (:proof-of (:app (:c Eq) (:arg :implicit-type 0 (:sort Prop)) (:arg :explicit 1 (:c True)) (:arg :explicit 2 (:c True))))) (:arg :proof 3 (:proof-of (:c True))))"
     ),
   ]
   entries.foldlM (λ suites (source, target) =>
@@ -104,7 +104,7 @@ def test_model_sexp_fvar_canonicalization (env: Environment): IO LSpec.TestSeq :
         let actual ← serializeModelExpressionSexp ctx expr
         return LSpec.check "canonical fvars"
           (actual =
-            "(:app (:c Eq) (:arg :implicit-type (:c Nat)) (:arg :explicit (:fv FV0)) (:arg :explicit (:fv FV1)))")
+            "(:app (:c Eq) (:arg :implicit-type 0 (:c Nat)) (:arg :explicit 1 (:fv FV0)) (:arg :explicit 2 (:fv FV1)))")
 
 def test_sexp_of_expr (env: Environment): IO LSpec.TestSeq := do
   let entries: List (Expr × String) := [

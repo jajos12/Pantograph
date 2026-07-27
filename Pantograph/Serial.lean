@@ -231,20 +231,21 @@ where
     let type ← Meta.inferType arg
     pure s!"(:instance-of {← self type})"
 
-  serializeArg (arg : Expr) (paramInfo? : Option Meta.ParamInfo) : MetaM String := do
+  serializeArg (index : Nat) (arg : Expr)
+      (paramInfo? : Option Meta.ParamInfo) : MetaM String := do
     if let some paramInfo := paramInfo? then
       if paramInfo.binderInfo == .instImplicit then
-        return s!"(:arg :instance {← instanceOf arg})"
+        return s!"(:arg :instance {index} {← instanceOf arg})"
       if paramInfo.binderInfo == .implicit ||
           paramInfo.binderInfo == .strictImplicit then
         if ← Meta.isType arg then
-          return s!"(:arg :implicit-type {← self arg})"
+          return s!"(:arg :implicit-type {index} {← self arg})"
         if ← Meta.isProof arg then
-          return s!"(:arg :proof {← proofOf arg})"
-        return "(:arg :implicit)"
+          return s!"(:arg :proof {index} {← proofOf arg})"
+        return s!"(:arg :implicit {index})"
     if ← Meta.isProof arg then
-      return s!"(:arg :proof {← proofOf arg})"
-    return s!"(:arg :explicit {← self arg})"
+      return s!"(:arg :proof {index} {← proofOf arg})"
+    return s!"(:arg :explicit {index} {← self arg})"
 
   self (e : Expr) : MetaM String := do
     match e.consumeMData with
@@ -268,7 +269,7 @@ where
       let fn' ← self fn
       let args' ← args.mapIdxM fun index arg => do
         let paramInfo? := info?.bind fun info => info.paramInfo[index]?
-        serializeArg arg paramInfo?
+        serializeArg index arg paramInfo?
       pure s!"(:app {fn'} {" ".intercalate args'.toList})"
     | .lam binderName binderType body binderInfo =>
       pure s!"(:lambda {serializeName binderName} {modelBinderInfoSexp binderInfo} {← self binderType} {← self body})"
