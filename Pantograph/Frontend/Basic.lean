@@ -99,6 +99,7 @@ def createContextStateFromFile
     (env? : Option Lean.Environment := .none) -- If set to true, assume there's no header.
     (opts : Options := {})
     : IO (Elab.Frontend.Context × Elab.Frontend.State) := unsafe do
+  enableInitializersExecution
   --let file ← IO.FS.readFile (← findSourcePath module)
   let inputCtx := Parser.mkInputContext file fileName
 
@@ -106,8 +107,12 @@ def createContextStateFromFile
     | .some env => pure (env, {}, .empty)
     | .none =>
       let (header, parserState, messages) ← Parser.parseHeader inputCtx
-      let (env, messages) ← Elab.processHeader header opts messages inputCtx
+      let (env, messages) ← Elab.processHeader header opts messages inputCtx (leakEnv := true)
       pure (env, parserState, messages)
+  let env ← if fileName == "<anonymous>" then
+      pure env
+    else
+      pure <| env.setMainModule (← moduleNameOfFileName ⟨fileName⟩ none)
   let commandState := Elab.Command.mkState env messages opts
   let context: Elab.Frontend.Context := { inputCtx }
   let state: Elab.Frontend.State := {

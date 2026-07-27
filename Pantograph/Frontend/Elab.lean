@@ -7,6 +7,7 @@ import Pantograph.Frontend.Basic
 import Pantograph.Frontend.MetaTranslate
 import Pantograph.Goal
 import Pantograph.Protocol
+import Pantograph.Serial
 
 open Lean
 
@@ -144,10 +145,11 @@ private def collectTacticNodes (t : Elab.InfoTree) : List TacticInvocation :=
     | _ => none
 
 def collectTactics (t : Elab.InfoTree) : List TacticInvocation :=
-  collectTacticNodes t |>.filter fun i => i.info.isSubstantive
+  collectTacticNodes t
 
 @[export pantograph_frontend_collect_tactics_from_compilation_step_m]
-def collectTacticsFromCompilationStep (step : CompilationStep) : IO (List Protocol.InvokedTactic) := do
+def collectTacticsFromCompilationStep (step : CompilationStep)
+    (options : Protocol.Options := {}) : IO (List Protocol.InvokedTactic) := do
   let tacticInfoTrees := step.trees.bind λ tree => tree.filter λ
     | info@(.ofTacticInfo _) => info.isOriginal
     | _ => false
@@ -155,10 +157,27 @@ def collectTacticsFromCompilationStep (step : CompilationStep) : IO (List Protoc
   tactics.mapM λ invocation => do
     let goalBefore := (Format.joinSep (← invocation.goalState) "\n").pretty
     let goalAfter := (Format.joinSep (← invocation.goalStateAfter) "\n").pretty
-    let tactic ← invocation.ctx.runMetaM {} do
-      let t ← PrettyPrinter.ppTactic ⟨invocation.info.stx⟩
-      return t.pretty
-    return { goalBefore, goalAfter, tactic }
+    let tactic := invocation.info.stx.reprint.getD (toString invocation.info.stx)
+    try
+      let goalsBefore ← invocation.runMetaMGoalsBefore fun goals =>
+        goals.toArray.mapM fun goal => do
+          let decl ← goal.getDecl
+          Pantograph.serializeGoal options goal decl
+      let goalsAfter ← invocation.runMetaMGoalsAfter fun goals =>
+        goals.toArray.mapM fun goal => do
+          let decl ← goal.getDecl
+          Pantograph.serializeGoal options goal decl
+      return { goalBefore, goalAfter, goalsBefore, goalsAfter, tactic }
+    catch e =>
+      let captureError := toString e
+      return {
+        goalBefore,
+        goalAfter,
+        goalsBefore := #[],
+        goalsAfter := #[],
+        captureError? := some captureError,
+        tactic,
+      }
 
 structure InfoWithContext where
   info: Elab.Info

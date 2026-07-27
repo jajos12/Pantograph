@@ -292,10 +292,14 @@ structure FrontendProcess where
   invocations: Bool := false
   -- If set to true, collect `sorry`s
   sorrys: Bool := false
+  outputFile?: Option String := .none
   deriving Lean.FromJson
 structure InvokedTactic where
   goalBefore: String
   goalAfter: String
+  goalsBefore: Array Goal
+  goalsAfter: Array Goal
+  captureError?: Option String := .none
   tactic: String
   deriving Lean.ToJson
 

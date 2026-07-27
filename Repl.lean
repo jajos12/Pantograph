@@ -219,7 +219,7 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
       let frontendM := Frontend.mapCompilationSteps λ step => do
         let boundary := (step.src.startPos.byteIdx, step.src.stopPos.byteIdx)
         let invocations?: Option (List Protocol.InvokedTactic) ← if args.invocations then
-            let invocations ← Frontend.collectTacticsFromCompilationStep step
+            let invocations ← Frontend.collectTacticsFromCompilationStep step options
             pure $ .some invocations
           else
             pure .none
@@ -245,7 +245,12 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
           goals,
           messages,
         }
-      return .ok { units }
+      let result : Protocol.FrontendProcessResult := { units }
+      if let some outputFile := args.outputFile? then
+        IO.FS.writeFile outputFile (Lean.Json.compress (Lean.toJson result))
+        return .ok { units := [] }
+      else
+        return .ok result
     catch e =>
       return .error $ errorI "frontend" (← e.toMessageData.toString)
 
