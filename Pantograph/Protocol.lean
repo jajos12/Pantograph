@@ -18,6 +18,9 @@ structure Options where
   printExprPretty: Bool    := true
   -- When enabled, print the raw AST of expressions
   printExprAST: Bool       := false
+  -- When enabled, print a model-oriented AST with proofs, instances, generated
+  -- free-variable names, and non-type implicit arguments normalized.
+  printExprModelAST: Bool  := false
   printDependentMVars: Bool := false
   -- When enabled, the types and values of persistent variables in a goal
   -- are not shown unless they are new to the proof step. Reduces overhead.
@@ -44,6 +47,9 @@ structure Expression where
   pp?: Option String             := .none
   -- AST structure
   sexp?: Option String           := .none
+  -- Lean-native, role-preserving normalized AST for machine learning.
+  modelSexp?: Option String      := .none
+  modelSexpVersion?: Option Nat  := .none
   dependentMVars?: Option (Array String) := .none
   deriving Lean.ToJson
 
@@ -188,6 +194,7 @@ structure OptionsSet where
   printJsonPretty?: Option Bool
   printExprPretty?: Option Bool
   printExprAST?: Option Bool
+  printExprModelAST?: Option Bool
   printDependentMVars?: Option Bool
   noRepeat?: Option Bool
   printAuxDecls?: Option Bool

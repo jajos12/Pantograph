@@ -92,6 +92,7 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
         printJsonPretty := args.printJsonPretty?.getD options.printJsonPretty,
         printExprPretty := args.printExprPretty?.getD options.printExprPretty,
         printExprAST := args.printExprAST?.getD options.printExprAST,
+        printExprModelAST := args.printExprModelAST?.getD options.printExprModelAST,
         printDependentMVars := args.printDependentMVars?.getD options.printDependentMVars,
         noRepeat := args.noRepeat?.getD options.noRepeat,
         printAuxDecls := args.printAuxDecls?.getD options.printAuxDecls,

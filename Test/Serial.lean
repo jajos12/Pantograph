@@ -68,6 +68,44 @@ def test_sexp_of_elab (env: Environment): IO LSpec.TestSeq := do
     return LSpec.TestSeq.append suites (← runMetaMSeq env metaM))
     LSpec.TestSeq.done
 
+def test_model_sexp_of_elab (env: Environment): IO LSpec.TestSeq := do
+  let entries: List (String × String) := [
+    (
+      "@Eq Nat 1 1",
+      "(:app (:c Eq) (:arg :implicit-type (:c Nat)) (:arg :explicit (:app (:c OfNat.ofNat) (:arg :implicit-type (:c Nat)) (:arg :explicit (:lit 1)) (:arg :instance (:instance-of (:app (:c OfNat) (:arg :explicit (:c Nat)) (:arg :explicit (:lit 1))))))) (:arg :explicit (:app (:c OfNat.ofNat) (:arg :implicit-type (:c Nat)) (:arg :explicit (:lit 1)) (:arg :instance (:instance-of (:app (:c OfNat) (:arg :explicit (:c Nat)) (:arg :explicit (:lit 1))))))))"
+    ),
+    (
+      "@Eq.mp True True (Eq.refl True) True.intro",
+      "(:app (:c Eq.mp) (:arg :implicit-type (:c True)) (:arg :implicit-type (:c True)) (:arg :proof (:proof-of (:app (:c Eq) (:arg :implicit-type (:sort Prop)) (:arg :explicit (:c True)) (:arg :explicit (:c True))))) (:arg :proof (:proof-of (:c True))))"
+    ),
+  ]
+  entries.foldlM (λ suites (source, target) =>
+    let termElabM := do
+      let env ← MonadEnv.getEnv
+      let s ← match parseTerm env source with
+        | .ok s => pure s
+        | .error e => return parseFailure e
+      let expr ← match (← elabTerm s) with
+        | .ok expr => pure expr
+        | .error e => return elabFailure e
+      return LSpec.check source
+        ((← serializeModelExpressionSexp {} expr) = target)
+    let metaM := termElabM.run' (ctx := Condensed.elabContext)
+    return LSpec.TestSeq.append suites (← runMetaMSeq env metaM))
+    LSpec.TestSeq.done
+
+def test_model_sexp_fvar_canonicalization (env: Environment): IO LSpec.TestSeq :=
+  runMetaMSeq env do
+    Meta.withLocalDecl `x .default (.const `Nat []) fun x => do
+      Meta.withLocalDecl `y .default (.const `Nat []) fun y => do
+        let lctx ← getLCtx
+        let ctx ← mkModelSexpContext lctx
+        let expr := mkApp3 (.const `Eq [0]) (.const `Nat []) x y
+        let actual ← serializeModelExpressionSexp ctx expr
+        return LSpec.check "canonical fvars"
+          (actual =
+            "(:app (:c Eq) (:arg :implicit-type (:c Nat)) (:arg :explicit (:fv FV0)) (:arg :explicit (:fv FV1)))")
+
 def test_sexp_of_expr (env: Environment): IO LSpec.TestSeq := do
   let entries: List (Expr × String) := [
     (.lam `p (.sort .zero)
@@ -102,6 +140,8 @@ def suite (env: Environment): List (String × IO LSpec.TestSeq) :=
     ("Expression binder", test_expr_to_binder env),
     ("Sexp from symbol", test_sexp_of_symbol env),
     ("Sexp from elaborated expr", test_sexp_of_elab env),
+    ("Model Sexp from elaborated expr", test_model_sexp_of_elab env),
+    ("Model Sexp canonical fvars", test_model_sexp_fvar_canonicalization env),
     ("Sexp from expr", test_sexp_of_expr env),
     ("Instance", test_instance env),
   ]

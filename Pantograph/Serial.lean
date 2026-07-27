@@ -189,19 +189,125 @@ partial def serializeExpressionSexp (expr: Expr) (sanitize: Bool := true): MetaM
     | .instImplicit => " :instImplicit"
   ofName (name: Name) := serializeName name sanitize
 
-def serializeExpression (options: @&Protocol.Options) (e: Expr): MetaM Protocol.Expression := do
+/-- Context shared by the target and every local declaration in one goal.
+Generated `FVarId` names are replaced by stable local-context positions. -/
+structure ModelSexpContext where
+  fvarIndices : FVarIdMap Nat := {}
+
+def mkModelSexpContext (lctx : LocalContext) : MetaM ModelSexpContext := do
+  let (_, fvarIndices) ← lctx.foldlM (init := (0, ({} : FVarIdMap Nat)))
+    fun (index, indices) localDecl =>
+      pure (index + 1, indices.insert localDecl.fvarId index)
+  pure { fvarIndices }
+
+def modelBinderInfoSexp : BinderInfo → String
+  | .default => ":explicit"
+  | .implicit => ":implicit"
+  | .strictImplicit => ":strict-implicit"
+  | .instImplicit => ":instance-implicit"
+
+def modelFVarName (ctx : ModelSexpContext) (fvarId : FVarId) : String :=
+  match ctx.fvarIndices.find? fvarId with
+  | some index => s!"FV{index}"
+  | none => "FV?"
+
+/--
+Serialize an expression for model consumption.
+
+The output is intentionally not a kernel expression. It preserves application
+roles and mathematical types while replacing proof terms, typeclass
+dictionaries, non-type implicit values, generated free-variable identities,
+and universe identities with stable semantic nodes.
+-/
+partial def serializeModelExpressionSexp
+    (ctx : ModelSexpContext) (expr : Expr) : MetaM String := do
+  self (← instantiateMVars expr)
+where
+  proofOf (arg : Expr) : MetaM String := do
+    let type ← Meta.inferType arg
+    pure s!"(:proof-of {← self type})"
+
+  instanceOf (arg : Expr) : MetaM String := do
+    let type ← Meta.inferType arg
+    pure s!"(:instance-of {← self type})"
+
+  serializeArg (arg : Expr) (paramInfo? : Option Meta.ParamInfo) : MetaM String := do
+    if let some paramInfo := paramInfo? then
+      if paramInfo.binderInfo == .instImplicit then
+        return s!"(:arg :instance {← instanceOf arg})"
+      if paramInfo.binderInfo == .implicit ||
+          paramInfo.binderInfo == .strictImplicit then
+        if ← Meta.isType arg then
+          return s!"(:arg :implicit-type {← self arg})"
+        if ← Meta.isProof arg then
+          return s!"(:arg :proof {← proofOf arg})"
+        return "(:arg :implicit)"
+    if ← Meta.isProof arg then
+      return s!"(:arg :proof {← proofOf arg})"
+    return s!"(:arg :explicit {← self arg})"
+
+  self (e : Expr) : MetaM String := do
+    match e.consumeMData with
+    | .bvar deBruijnIndex =>
+      pure s!"{deBruijnIndex}"
+    | .fvar fvarId =>
+      pure s!"(:fv {modelFVarName ctx fvarId})"
+    | .mvar _ =>
+      pure "(:metavar)"
+    | .sort level =>
+      pure $ if level.isZero then "(:sort Prop)" else "(:sort Type)"
+    | .const declName _ =>
+      pure s!"(:c {serializeName declName (sanitize := false)})"
+    | app@(.app _ _) => do
+      let fn := app.getAppFn
+      let args := app.getAppArgs
+      let info? ← try
+        pure (some (← Meta.getFunInfoNArgs fn args.size))
+      catch _ =>
+        pure none
+      let fn' ← self fn
+      let args' ← args.mapIdxM fun index arg => do
+        let paramInfo? := info?.bind fun info => info.paramInfo[index]?
+        serializeArg arg paramInfo?
+      pure s!"(:app {fn'} {" ".intercalate args'.toList})"
+    | .lam binderName binderType body binderInfo =>
+      pure s!"(:lambda {serializeName binderName} {modelBinderInfoSexp binderInfo} {← self binderType} {← self body})"
+    | .forallE binderName binderType body binderInfo =>
+      pure s!"(:forall {serializeName binderName} {modelBinderInfoSexp binderInfo} {← self binderType} {← self body})"
+    | .letE name type value body _ =>
+      pure s!"(:let {serializeName name} {← self type} {← self value} {← self body})"
+    | .lit value =>
+      let value' := match value with
+        | .natVal val => toString val
+        | .strVal val => s!"\"{val}\""
+      pure s!"(:lit {value'})"
+    | .proj typeName index inner =>
+      pure s!"(:proj {serializeName typeName (sanitize := false)} {index} {← self inner})"
+    | .mdata _ inner =>
+      self inner
+
+def serializeExpression
+    (options: @&Protocol.Options)
+    (e: Expr)
+    (modelCtx : ModelSexpContext := {}): MetaM Protocol.Expression := do
   let pp?: Option String ← match options.printExprPretty with
     | true => pure $ .some $ toString $ ← Meta.ppExpr e
     | false => pure $ .none
   let sexp?: Option String ← match options.printExprAST with
     | true => pure $ .some $ ← serializeExpressionSexp e
     | false => pure $ .none
+  let modelSexp?: Option String ← match options.printExprModelAST with
+    | true => pure $ .some $ ← serializeModelExpressionSexp modelCtx e
+    | false => pure $ .none
+  let modelSexpVersion? := if options.printExprModelAST then some 1 else none
   let dependentMVars? ← match options.printDependentMVars with
     | true => pure $ .some $ (← Meta.getMVars e).map (λ mvarId => mvarId.name.toString)
     | false => pure $ .none
   return {
     pp?,
     sexp?
+    modelSexp?
+    modelSexpVersion?
     dependentMVars?,
   }
 
@@ -216,6 +322,7 @@ def serializeGoal (options: @&Protocol.Options) (goal: MVarId) (mvarDecl: Metava
   let lctx           := mvarDecl.lctx
   let lctx           := lctx.sanitizeNames.run' { options := (← getOptions) }
   Meta.withLCtx lctx mvarDecl.localInstances do
+    let modelCtx ← mkModelSexpContext lctx
     let ppVarNameOnly (localDecl: LocalDecl): MetaM Protocol.Variable := do
       match localDecl with
       | .cdecl _ fvarId userName _ _ _ =>
@@ -239,21 +346,21 @@ def serializeGoal (options: @&Protocol.Options) (goal: MVarId) (mvarDecl: Metava
           name := ofName fvarId.name,
           userName:= ofName userName,
           isInaccessible := userName.isInaccessibleUserName
-          type? := .some (← serializeExpression options type)
+          type? := .some (← serializeExpression options type modelCtx)
         }
       | .ldecl _ fvarId userName type val _ _ => do
         let userName := userName.simpMacroScopes
         let type ← instantiate type
         let value? ← if showLetValues then
           let val ← instantiate val
-          pure $ .some (← serializeExpression options val)
+          pure $ .some (← serializeExpression options val modelCtx)
         else
           pure $ .none
         return {
           name := ofName fvarId.name,
           userName:= ofName userName,
           isInaccessible := userName.isInaccessibleUserName
-          type? := .some (← serializeExpression options type)
+          type? := .some (← serializeExpression options type modelCtx)
           value? := value?
         }
     let vars ← lctx.foldlM (init := []) fun acc (localDecl : LocalDecl) => do
@@ -272,7 +379,7 @@ def serializeGoal (options: @&Protocol.Options) (goal: MVarId) (mvarDecl: Metava
       name := ofName goal.name,
       userName? := if mvarDecl.userName == .anonymous then .none else .some (ofName mvarDecl.userName),
       isConversion := isLHSGoal? mvarDecl.type |>.isSome,
-      target := (← serializeExpression options (← instantiate mvarDecl.type)),
+      target := (← serializeExpression options (← instantiate mvarDecl.type) modelCtx),
       vars := vars.reverse.toArray
     }
   where
