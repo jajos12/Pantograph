@@ -193,6 +193,7 @@ partial def serializeExpressionSexp (expr: Expr) (sanitize: Bool := true): MetaM
 Generated `FVarId` names are replaced by stable local-context positions. -/
 structure ModelSexpContext where
   fvarIndices : FVarIdMap Nat := {}
+  boundFVars : List FVarId := []
 
 def mkModelSexpContext (lctx : LocalContext) : MetaM ModelSexpContext := do
   let (_, fvarIndices) ← lctx.foldlM (init := (0, ({} : FVarIdMap Nat)))
@@ -206,10 +207,22 @@ def modelBinderInfoSexp : BinderInfo → String
   | .strictImplicit => ":strict-implicit"
   | .instImplicit => ":instance-implicit"
 
-def modelFVarName (ctx : ModelSexpContext) (fvarId : FVarId) : String :=
+def modelBoundFVarIndex? (boundFVars : List FVarId)
+    (fvarId : FVarId) : Option Nat :=
+  let rec visit (remaining : List FVarId) (index : Nat) : Option Nat :=
+    match remaining with
+    | [] => none
+    | current :: rest =>
+      if current == fvarId then some index else visit rest (index + 1)
+  visit boundFVars 0
+
+def modelFVarSexp (ctx : ModelSexpContext) (fvarId : FVarId) : String :=
+  if let some index := modelBoundFVarIndex? ctx.boundFVars fvarId then
+    s!"{index}"
+  else
   match ctx.fvarIndices.find? fvarId with
-  | some index => s!"FV{index}"
-  | none => "FV?"
+  | some index => s!"(:fv FV{index})"
+  | none => "(:fv FV?)"
 
 /--
 Serialize an expression for model consumption.
@@ -221,38 +234,38 @@ and universe identities with stable semantic nodes.
 -/
 partial def serializeModelExpressionSexp
     (ctx : ModelSexpContext) (expr : Expr) : MetaM String := do
-  self (← instantiateMVars expr)
+  go ctx (← instantiateMVars expr)
 where
-  proofOf (arg : Expr) : MetaM String := do
+  proofOf (currentCtx : ModelSexpContext) (arg : Expr) : MetaM String := do
     let type ← Meta.inferType arg
-    pure s!"(:proof-of {← self type})"
+    pure s!"(:proof-of {← go currentCtx type})"
 
-  instanceOf (arg : Expr) : MetaM String := do
+  instanceOf (currentCtx : ModelSexpContext) (arg : Expr) : MetaM String := do
     let type ← Meta.inferType arg
-    pure s!"(:instance-of {← self type})"
+    pure s!"(:instance-of {← go currentCtx type})"
 
-  serializeArg (index : Nat) (arg : Expr)
+  serializeArg (currentCtx : ModelSexpContext) (index : Nat) (arg : Expr)
       (paramInfo? : Option Meta.ParamInfo) : MetaM String := do
     if let some paramInfo := paramInfo? then
       if paramInfo.binderInfo == .instImplicit then
-        return s!"(:arg :instance {index} {← instanceOf arg})"
+        return s!"(:arg :instance {index} {← instanceOf currentCtx arg})"
       if paramInfo.binderInfo == .implicit ||
           paramInfo.binderInfo == .strictImplicit then
         if ← Meta.isType arg then
-          return s!"(:arg :implicit-type {index} {← self arg})"
+          return s!"(:arg :implicit-type {index} {← go currentCtx arg})"
         if ← Meta.isProof arg then
-          return s!"(:arg :proof {index} {← proofOf arg})"
+          return s!"(:arg :proof {index} {← proofOf currentCtx arg})"
         return s!"(:arg :implicit {index})"
     if ← Meta.isProof arg then
-      return s!"(:arg :proof {index} {← proofOf arg})"
-    return s!"(:arg :explicit {index} {← self arg})"
+      return s!"(:arg :proof {index} {← proofOf currentCtx arg})"
+    return s!"(:arg :explicit {index} {← go currentCtx arg})"
 
-  self (e : Expr) : MetaM String := do
+  go (currentCtx : ModelSexpContext) (e : Expr) : MetaM String := do
     match e.consumeMData with
     | .bvar deBruijnIndex =>
       pure s!"{deBruijnIndex}"
     | .fvar fvarId =>
-      pure s!"(:fv {modelFVarName ctx fvarId})"
+      pure (modelFVarSexp currentCtx fvarId)
     | .mvar _ =>
       pure "(:metavar)"
     | .sort level =>
@@ -266,26 +279,45 @@ where
         pure (some (← Meta.getFunInfoNArgs fn args.size))
       catch _ =>
         pure none
-      let fn' ← self fn
+      let fn' ← go currentCtx fn
       let args' ← args.mapIdxM fun index arg => do
         let paramInfo? := info?.bind fun info => info.paramInfo[index]?
-        serializeArg index arg paramInfo?
+        serializeArg currentCtx index arg paramInfo?
       pure s!"(:app {fn'} {" ".intercalate args'.toList})"
-    | .lam binderName binderType body binderInfo =>
-      pure s!"(:lambda {serializeName binderName} {modelBinderInfoSexp binderInfo} {← self binderType} {← self body})"
-    | .forallE binderName binderType body binderInfo =>
-      pure s!"(:forall {serializeName binderName} {modelBinderInfoSexp binderInfo} {← self binderType} {← self body})"
-    | .letE name type value body _ =>
-      pure s!"(:let {serializeName name} {← self type} {← self value} {← self body})"
+    | .lam binderName binderType body binderInfo => do
+      let binderType' ← go currentCtx binderType
+      Meta.withLocalDecl binderName binderInfo binderType fun fvar => do
+        let bodyCtx := {
+          currentCtx with boundFVars := fvar.fvarId! :: currentCtx.boundFVars
+        }
+        let body' ← go bodyCtx (body.instantiate1 fvar)
+        pure s!"(:lambda {serializeName binderName} {modelBinderInfoSexp binderInfo} {binderType'} {body'})"
+    | .forallE binderName binderType body binderInfo => do
+      let binderType' ← go currentCtx binderType
+      Meta.withLocalDecl binderName binderInfo binderType fun fvar => do
+        let bodyCtx := {
+          currentCtx with boundFVars := fvar.fvarId! :: currentCtx.boundFVars
+        }
+        let body' ← go bodyCtx (body.instantiate1 fvar)
+        pure s!"(:forall {serializeName binderName} {modelBinderInfoSexp binderInfo} {binderType'} {body'})"
+    | .letE name type value body _ => do
+      let type' ← go currentCtx type
+      let value' ← go currentCtx value
+      Meta.withLetDecl name type value fun fvar => do
+        let bodyCtx := {
+          currentCtx with boundFVars := fvar.fvarId! :: currentCtx.boundFVars
+        }
+        let body' ← go bodyCtx (body.instantiate1 fvar)
+        pure s!"(:let {serializeName name} {type'} {value'} {body'})"
     | .lit value =>
       let value' := match value with
         | .natVal val => toString val
         | .strVal val => s!"\"{val}\""
       pure s!"(:lit {value'})"
     | .proj typeName index inner =>
-      pure s!"(:proj {serializeName typeName (sanitize := false)} {index} {← self inner})"
+      pure s!"(:proj {serializeName typeName (sanitize := false)} {index} {← go currentCtx inner})"
     | .mdata _ inner =>
-      self inner
+      go currentCtx inner
 
 def serializeExpression
     (options: @&Protocol.Options)

@@ -106,6 +106,22 @@ def test_model_sexp_fvar_canonicalization (env: Environment): IO LSpec.TestSeq :
           (actual =
             "(:app (:c Eq) (:arg :implicit-type 0 (:c Nat)) (:arg :explicit 1 (:fv FV0)) (:arg :explicit 2 (:fv FV1)))")
 
+def test_model_sexp_dependent_binders (env: Environment): IO LSpec.TestSeq := do
+  let termElabM := do
+    let env ← MonadEnv.getEnv
+    let source := "fun (α : Type) (f : α → α) (x : α) => f x"
+    let parsedTerm ← match parseTerm env source with
+      | .ok parsedTerm => pure parsedTerm
+      | .error error => return parseFailure error
+    let expr ← match (← elabTerm parsedTerm) with
+      | .ok expr => pure expr
+      | .error error => return elabFailure error
+    let serialized ← serializeModelExpressionSexp {} expr
+    return LSpec.check "dependent binder application uses De Bruijn scope"
+      (serialized =
+        "(:lambda α :explicit (:sort Type) (:lambda f :explicit (:forall _ :explicit 0 1) (:lambda x :explicit 1 (:app 1 (:arg :explicit 0 0)))))")
+  runMetaMSeq env (termElabM.run' (ctx := Condensed.elabContext))
+
 def test_sexp_of_expr (env: Environment): IO LSpec.TestSeq := do
   let entries: List (Expr × String) := [
     (.lam `p (.sort .zero)
@@ -142,6 +158,7 @@ def suite (env: Environment): List (String × IO LSpec.TestSeq) :=
     ("Sexp from elaborated expr", test_sexp_of_elab env),
     ("Model Sexp from elaborated expr", test_model_sexp_of_elab env),
     ("Model Sexp canonical fvars", test_model_sexp_fvar_canonicalization env),
+    ("Model Sexp dependent binders", test_model_sexp_dependent_binders env),
     ("Sexp from expr", test_sexp_of_expr env),
     ("Instance", test_instance env),
   ]
