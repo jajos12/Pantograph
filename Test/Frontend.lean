@@ -55,6 +55,14 @@ example (P : Prop) : P → P := by
   intro x
   exact x
 
+example : ∀ P Q : Prop, P → P := by
+  intros P Q x
+  exact x
+
+example (P Q : Prop) : P ∧ Q → Q := by
+  rintro ⟨x, y⟩
+  exact y
+
 example (α : Type) (f g : α → Nat) (h : ∀ x, f x = g x) : f = g := by
   ext x
   exact h x
@@ -65,6 +73,8 @@ example (α : Type) (f g : α → Nat) (h : ∀ x, f x = g x) : f = g := by
   let nested := findStructuredTerm? invocations "exact f (g h)"
   let rewrite := findStructuredTerm? invocations "rw [h]"
   let introInvocation := findInvocation? invocations "intro x"
+  let introsInvocation := findInvocation? invocations "intros P Q x"
+  let rintroInvocation := findInvocation? invocations "rintro ⟨x, y⟩"
   let extInvocation := findInvocation? invocations "ext x"
   addTest $ LSpec.check "application source" (application.map (·.source) == some "f h")
   addTest $ LSpec.check "application structure"
@@ -82,6 +92,12 @@ example (α : Type) (f g : α → Nat) (h : ∀ x, f x = g x) : f = g := by
   addTest $ LSpec.check "intro fresh name"
     (introInvocation.map (·.syntaxArgs.map fun arg => (arg.role, arg.source)) ==
       some #[("fresh_name", "x")])
+  addTest $ LSpec.check "intros fresh names"
+    (introsInvocation.map (·.syntaxArgs.map fun arg => (arg.role, arg.source)) ==
+      some #[("fresh_name", "P"), ("fresh_name", "Q"), ("fresh_name", "x")])
+  addTest $ LSpec.check "rintro pattern fresh names"
+    (rintroInvocation.map (·.syntaxArgs.map fun arg => (arg.role, arg.source)) ==
+      some #[("fresh_name", "x"), ("fresh_name", "y")])
   addTest $ LSpec.check "ext fresh name"
     (extInvocation.map (·.syntaxArgs.map fun arg => (arg.role, arg.source)) ==
       some #[("fresh_name", "x")])
