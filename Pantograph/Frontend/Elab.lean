@@ -147,18 +147,69 @@ private def collectTacticNodes (t : Elab.InfoTree) : List TacticInvocation :=
 def collectTactics (t : Elab.InfoTree) : List TacticInvocation :=
   collectTacticNodes t
 
+/-- Collect elaborated terms below a tactic, including tactic-specific nested info nodes. -/
+private partial def collectDescendantTerms : Elab.InfoTree → List Elab.TermInfo
+  | .context _ tree => collectDescendantTerms tree
+  | .node (.ofTermInfo info) children =>
+    info :: children.toList.bind collectDescendantTerms
+  | .node _ children => children.toList.bind collectDescendantTerms
+  | .hole _ => []
+
+private def termRange (term : Elab.TermInfo) : Option (Nat × Nat) := do
+  let start ← term.stx.getPos?
+  let stop ← term.stx.getTailPos?
+  pure (start.byteIdx, stop.byteIdx)
+
+/-- Keep one outermost elaborated term for each source range. -/
+private def outermostOwnedTerms (invocation : TacticInvocation) : List Elab.TermInfo :=
+  let terms := invocation.children.toList.bind collectDescendantTerms |>.filter fun term =>
+    !term.isBinder && (Elab.Info.ofTermInfo term).isOriginal && (termRange term).isSome
+  terms.foldl (init := []) fun selected term =>
+    match termRange term with
+    | none => selected
+    | some (start, stop) =>
+      let contained := terms.any fun other =>
+        match termRange other with
+        | some (otherStart, otherStop) =>
+          (otherStart < start || stop < otherStop) &&
+            otherStart <= start && stop <= otherStop
+        | none => false
+      if contained || selected.any (termRange · == some (start, stop)) then
+        selected
+      else
+        selected ++ [term]
+
+private def serializeInvokedTerm
+    (invocation : TacticInvocation) (term : Elab.TermInfo) : IO Protocol.InvokedTerm := do
+  let some (sourceStart, sourceEnd) := termRange term
+    | throw <| IO.userError "Elaborated tactic term has no source range"
+  invocation.ctx.runMetaM {} <| Meta.withMCtx invocation.info.mctxAfter <|
+    Meta.withLCtx term.lctx #[] do
+      let some goal := invocation.info.goalsBefore.head?
+        | throwError "Tactic invocation has no input goal"
+      let goalDecl ← goal.getDecl
+      let actionCtx ← Pantograph.mkModelSexpContext goalDecl.lctx
+      let actionSexp ← Pantograph.serializeActionExpressionSexp actionCtx term.expr
+      pure {
+        source := term.stx.reprint.getD (toString term.stx) |>.trim
+        syntaxKind := toString term.stx.getKind
+        sourceStart
+        sourceEnd
+        actionSexp
+      }
+
 @[export pantograph_frontend_collect_tactics_from_compilation_step_m]
 def collectTacticsFromCompilationStep (step : CompilationStep)
     (options : Protocol.Options := {}) : IO (List Protocol.InvokedTactic) := do
-  let tacticInfoTrees := step.trees.bind λ tree => tree.filter λ
-    | info@(.ofTacticInfo _) => info.isOriginal
-    | _ => false
-  let tactics := tacticInfoTrees.bind collectTactics
+  let tactics := step.trees.bind collectTactics |>.filter fun invocation =>
+    (Elab.Info.ofTacticInfo invocation.info).isOriginal
   tactics.mapM λ invocation => do
     let goalBefore := (Format.joinSep (← invocation.goalState) "\n").pretty
     let goalAfter := (Format.joinSep (← invocation.goalStateAfter) "\n").pretty
     let tactic := invocation.info.stx.reprint.getD (toString invocation.info.stx)
     try
+      let terms ← outermostOwnedTerms invocation |>.toArray.mapM
+        (serializeInvokedTerm invocation)
       let goalsBefore ← invocation.runMetaMGoalsBefore fun goals =>
         goals.toArray.mapM fun goal => do
           let decl ← goal.getDecl
@@ -167,7 +218,7 @@ def collectTacticsFromCompilationStep (step : CompilationStep)
         goals.toArray.mapM fun goal => do
           let decl ← goal.getDecl
           Pantograph.serializeGoal options goal decl
-      return { goalBefore, goalAfter, goalsBefore, goalsAfter, tactic }
+      return { goalBefore, goalAfter, goalsBefore, goalsAfter, tactic, terms }
     catch e =>
       let captureError := toString e
       return {

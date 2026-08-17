@@ -39,6 +39,7 @@ deriving instance DecidableEq, Repr for Name
 deriving instance DecidableEq, Repr for Expression
 deriving instance DecidableEq, Repr for Variable
 deriving instance DecidableEq, Repr for Goal
+deriving instance DecidableEq, Repr for InvokedTerm
 deriving instance DecidableEq, Repr for ExprEchoResult
 deriving instance DecidableEq, Repr for InteractionError
 deriving instance DecidableEq, Repr for Option

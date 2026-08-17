@@ -225,6 +225,91 @@ def modelFVarSexp (ctx : ModelSexpContext) (fvarId : FVarId) : String :=
   | none => "(:fv FV?)"
 
 /--
+Serialize an elaborated tactic term for action generation.
+
+Unlike `serializeModelExpressionSexp`, this representation preserves proof
+terms and local references. Implicit and instance arguments inserted by Lean
+are omitted because a generated surface term does not need to spell them.
+Free variables use the same stable local-context positions as model goal
+S-expressions.
+-/
+partial def serializeActionExpressionSexp
+    (ctx : ModelSexpContext) (expr : Expr) : MetaM String := do
+  go ctx (← instantiateMVars expr)
+where
+  localReference (currentCtx : ModelSexpContext) (fvarId : FVarId) : String :=
+    if let some index := modelBoundFVarIndex? currentCtx.boundFVars fvarId then
+      s!"(:bound {index})"
+    else
+      match currentCtx.fvarIndices.find? fvarId with
+      | some index => s!"(:local FV{index})"
+      | none => "(:local FV?)"
+
+  go (currentCtx : ModelSexpContext) (e : Expr) : MetaM String := do
+    match e.consumeMData with
+    | .bvar deBruijnIndex =>
+      pure s!"(:bound {deBruijnIndex})"
+    | .fvar fvarId =>
+      pure (localReference currentCtx fvarId)
+    | .mvar _ =>
+      pure "(:metavar)"
+    | .sort level =>
+      pure $ if level.isZero then "(:sort Prop)" else "(:sort Type)"
+    | .const declName _ => do
+      let env ← getEnv
+      let role := if env.isConstructor declName then ":ctor" else ":global"
+      pure s!"({role} {serializeName declName (sanitize := false)})"
+    | app@(.app _ _) => do
+      let fn := app.getAppFn
+      let args := app.getAppArgs
+      let info? ← try
+        pure (some (← Meta.getFunInfoNArgs fn args.size))
+      catch _ =>
+        pure none
+      let explicitArgs := args.mapIdx (fun index arg =>
+        match info?.bind fun info => info.paramInfo[index.val]? with
+        | some paramInfo =>
+          if paramInfo.binderInfo == .default then some arg else none
+        | none => some arg) |>.filterMap id
+      let fn' ← go currentCtx fn
+      let args' ← explicitArgs.mapM (go currentCtx)
+      pure s!"(:app {fn'} {" ".intercalate args'.toList})"
+    | .lam binderName binderType body binderInfo => do
+      let binderType' ← go currentCtx binderType
+      Meta.withLocalDecl binderName binderInfo binderType fun fvar => do
+        let bodyCtx := {
+          currentCtx with boundFVars := fvar.fvarId! :: currentCtx.boundFVars
+        }
+        let body' ← go bodyCtx (body.instantiate1 fvar)
+        pure s!"(:lambda {serializeName binderName} {binderType'} {body'})"
+    | .forallE binderName binderType body binderInfo => do
+      let binderType' ← go currentCtx binderType
+      Meta.withLocalDecl binderName binderInfo binderType fun fvar => do
+        let bodyCtx := {
+          currentCtx with boundFVars := fvar.fvarId! :: currentCtx.boundFVars
+        }
+        let body' ← go bodyCtx (body.instantiate1 fvar)
+        pure s!"(:forall {serializeName binderName} {binderType'} {body'})"
+    | .letE name type value body _ => do
+      let type' ← go currentCtx type
+      let value' ← go currentCtx value
+      Meta.withLetDecl name type value fun fvar => do
+        let bodyCtx := {
+          currentCtx with boundFVars := fvar.fvarId! :: currentCtx.boundFVars
+        }
+        let body' ← go bodyCtx (body.instantiate1 fvar)
+        pure s!"(:let {serializeName name} {type'} {value'} {body'})"
+    | .lit value =>
+      let value' := match value with
+        | .natVal val => toString val
+        | .strVal val => s!"\"{val}\""
+      pure s!"(:lit {value'})"
+    | .proj typeName index inner =>
+      pure s!"(:proj {serializeName typeName (sanitize := false)} {index} {← go currentCtx inner})"
+    | .mdata _ inner =>
+      go currentCtx inner
+
+/--
 Serialize an expression for model consumption.
 
 The output is intentionally not a kernel expression. It preserves application

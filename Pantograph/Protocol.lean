@@ -309,6 +309,17 @@ structure FrontendProcess where
   sorrys: Bool := false
   outputFile?: Option String := .none
   deriving Lean.FromJson
+structure InvokedTerm where
+  /-- Exact source spelling of this elaborated term. -/
+  source: String
+  /-- Lean parser category/kind for the source syntax. -/
+  syntaxKind: String
+  /-- Start and end byte offsets in the compiled source file. -/
+  sourceStart: Nat
+  sourceEnd: Nat
+  /-- Action-oriented expression tree with stable local references. -/
+  actionSexp: String
+  deriving Lean.ToJson
 structure InvokedTactic where
   goalBefore: String
   goalAfter: String
@@ -316,6 +327,8 @@ structure InvokedTactic where
   goalsAfter: Array Goal
   captureError?: Option String := .none
   tactic: String
+  /-- Outermost elaborated term arguments owned by this tactic invocation. -/
+  terms: Array InvokedTerm := #[]
   deriving Lean.ToJson
 
 structure CompilationUnit where

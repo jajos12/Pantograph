@@ -19,6 +19,53 @@ def collectSorrysFromSource (source: String) : MetaM (List GoalState) := do
     return .some goalState
   return goalStates
 
+def collectInvocationsFromSource (source: String) : MetaM (List Protocol.InvokedTactic) := do
+  let filename := "<anonymous>"
+  let (context, state) ← do Frontend.createContextStateFromFile source filename (← getEnv) {}
+  let m := Frontend.mapCompilationSteps fun step =>
+    Frontend.collectTacticsFromCompilationStep step { printExprModelAST := true }
+  let invocations ← m.run context |>.run' state
+  return invocations.join
+
+def findStructuredTerm? (invocations : List Protocol.InvokedTactic)
+    (tactic : String) : Option Protocol.InvokedTerm := do
+  let invocation ← invocations.find? fun invocation =>
+    invocation.tactic.trim == tactic && !invocation.terms.isEmpty
+  invocation.terms[0]?
+
+def test_structured_tactic_terms : TestT MetaM Unit := do
+  let source := "
+example (P Q : Prop) (f : P → Q) (h : P) : Q := by
+  exact f h
+
+example (P Q : Prop) (h₁ : P) (h₂ : Q) : P ∧ Q := by
+  exact ⟨h₁, h₂⟩
+
+example (P Q R : Prop) (f : Q → R) (g : P → Q) (h : P) : R := by
+  exact f (g h)
+
+example (a b : Nat) (h : a = b) : a = b := by
+  rw [h]
+"
+  let invocations ← collectInvocationsFromSource source
+  let application := findStructuredTerm? invocations "exact f h"
+  let constructor := findStructuredTerm? invocations "exact ⟨h₁, h₂⟩"
+  let nested := findStructuredTerm? invocations "exact f (g h)"
+  let rewrite := findStructuredTerm? invocations "rw [h]"
+  addTest $ LSpec.check "application source" (application.map (·.source) == some "f h")
+  addTest $ LSpec.check "application structure"
+    (application.map (·.actionSexp) == some "(:app (:local FV3) (:local FV4))")
+  addTest $ LSpec.check "constructor source"
+    (constructor.map (·.source) == some "⟨h₁, h₂⟩")
+  addTest $ LSpec.check "constructor structure"
+    (constructor.map (·.actionSexp) ==
+      some "(:app (:ctor And.intro) (:local FV3) (:local FV4))")
+  addTest $ LSpec.check "nested application structure"
+    (nested.map (·.actionSexp) ==
+      some "(:app (:local FV4) (:app (:local FV5) (:local FV6)))")
+  addTest $ LSpec.check "rewrite local reference"
+    (rewrite.map (·.actionSexp) == some "(:local FV3)")
+
 def test_multiple_sorrys_in_proof : TestT MetaM Unit := do
   let sketch := "
 theorem plus_n_Sm_proved_formal_sketch : ∀ n m : Nat, n + (m + 1) = (n + m) + 1 := by
@@ -162,6 +209,7 @@ example : ∀ (y: Nat), ∃ (x: Nat), y + 1 = x := by
 
 def suite (env : Environment): List (String × IO LSpec.TestSeq) :=
   let tests := [
+    ("structured_tactic_terms", test_structured_tactic_terms),
     ("multiple_sorrys_in_proof", test_multiple_sorrys_in_proof),
     ("sorry_in_middle", test_sorry_in_middle),
     ("sorry_in_induction", test_sorry_in_induction),
