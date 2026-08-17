@@ -320,6 +320,15 @@ structure InvokedTerm where
   /-- Action-oriented expression tree with stable local references. -/
   actionSexp: String
   deriving Lean.ToJson
+structure InvokedSyntaxArgument where
+  /-- Semantic role established from Lean's tactic syntax and goal transition. -/
+  role: String
+  /-- Exact source spelling of the syntax argument. -/
+  source: String
+  syntaxKind: String
+  sourceStart: Nat
+  sourceEnd: Nat
+  deriving Lean.ToJson
 structure InvokedTactic where
   goalBefore: String
   goalAfter: String
@@ -329,6 +338,8 @@ structure InvokedTactic where
   tactic: String
   /-- Outermost elaborated term arguments owned by this tactic invocation. -/
   terms: Array InvokedTerm := #[]
+  /-- Non-term tactic arguments, such as names of freshly introduced binders. -/
+  syntaxArgs: Array InvokedSyntaxArgument := #[]
   deriving Lean.ToJson
 
 structure CompilationUnit where

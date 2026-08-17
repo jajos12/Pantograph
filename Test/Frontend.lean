@@ -33,6 +33,10 @@ def findStructuredTerm? (invocations : List Protocol.InvokedTactic)
     invocation.tactic.trim == tactic && !invocation.terms.isEmpty
   invocation.terms[0]?
 
+def findInvocation? (invocations : List Protocol.InvokedTactic)
+    (tactic : String) : Option Protocol.InvokedTactic :=
+  invocations.find? fun invocation => invocation.tactic.trim == tactic
+
 def test_structured_tactic_terms : TestT MetaM Unit := do
   let source := "
 example (P Q : Prop) (f : P → Q) (h : P) : Q := by
@@ -46,12 +50,22 @@ example (P Q R : Prop) (f : Q → R) (g : P → Q) (h : P) : R := by
 
 example (a b : Nat) (h : a = b) : a = b := by
   rw [h]
+
+example (P : Prop) : P → P := by
+  intro x
+  exact x
+
+example (α : Type) (f g : α → Nat) (h : ∀ x, f x = g x) : f = g := by
+  ext x
+  exact h x
 "
   let invocations ← collectInvocationsFromSource source
   let application := findStructuredTerm? invocations "exact f h"
   let constructor := findStructuredTerm? invocations "exact ⟨h₁, h₂⟩"
   let nested := findStructuredTerm? invocations "exact f (g h)"
   let rewrite := findStructuredTerm? invocations "rw [h]"
+  let introInvocation := findInvocation? invocations "intro x"
+  let extInvocation := findInvocation? invocations "ext x"
   addTest $ LSpec.check "application source" (application.map (·.source) == some "f h")
   addTest $ LSpec.check "application structure"
     (application.map (·.actionSexp) == some "(:app (:local FV3) (:local FV4))")
@@ -65,6 +79,12 @@ example (a b : Nat) (h : a = b) : a = b := by
       some "(:app (:local FV4) (:app (:local FV5) (:local FV6)))")
   addTest $ LSpec.check "rewrite local reference"
     (rewrite.map (·.actionSexp) == some "(:local FV3)")
+  addTest $ LSpec.check "intro fresh name"
+    (introInvocation.map (·.syntaxArgs.map fun arg => (arg.role, arg.source)) ==
+      some #[("fresh_name", "x")])
+  addTest $ LSpec.check "ext fresh name"
+    (extInvocation.map (·.syntaxArgs.map fun arg => (arg.role, arg.source)) ==
+      some #[("fresh_name", "x")])
 
 def test_multiple_sorrys_in_proof : TestT MetaM Unit := do
   let sketch := "

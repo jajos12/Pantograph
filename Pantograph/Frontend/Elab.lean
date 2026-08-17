@@ -2,6 +2,7 @@
 import Lean.Elab.Import
 import Lean.Elab.Command
 import Lean.Elab.InfoTree
+import Init.Ext
 
 import Pantograph.Frontend.Basic
 import Pantograph.Frontend.MetaTranslate
@@ -198,6 +199,57 @@ private def serializeInvokedTerm
         actionSexp
       }
 
+private def isBinderIntroducingTactic (stx : Syntax) : Bool :=
+  let kind := stx.getKind
+  kind == ``Lean.Parser.Tactic.intro ||
+    kind == ``Lean.Parser.Tactic.intros ||
+    kind == ``Lean.Parser.Tactic.rintro ||
+    kind.toString == "Lean.Elab.Tactic.Ext.ext"
+
+private partial def collectOriginalIdentifiers : Syntax → List Syntax
+  | stx@(.ident _ _ _ _) =>
+    match stx.getHeadInfo with
+    | .original .. => [stx]
+    | _ => []
+  | .node _ _ args => args.toList.bind collectOriginalIdentifiers
+  | _ => []
+
+private def newlyIntroducedUserNames (invocation : TacticInvocation) : IO (Array Name) := do
+  let beforeIds ← invocation.runMetaMGoalsBefore fun goals => do
+    let mut ids := #[]
+    for goal in goals do
+      let decl ← goal.getDecl
+      ids := ids ++ decl.lctx.getFVarIds
+    pure ids
+  invocation.runMetaMGoalsAfter fun goals => do
+    let mut names := #[]
+    for goal in goals do
+      let decl ← goal.getDecl
+      for fvarId in decl.lctx.getFVarIds do
+        if !beforeIds.contains fvarId then
+          names := names.push (decl.lctx.get! fvarId).userName
+    pure names
+
+private def collectSyntaxArguments
+    (invocation : TacticInvocation) : IO (Array Protocol.InvokedSyntaxArgument) := do
+  if !isBinderIntroducingTactic invocation.info.stx then
+    return #[]
+  let introducedNames ← newlyIntroducedUserNames invocation
+  let mut arguments := #[]
+  for stx in collectOriginalIdentifiers invocation.info.stx do
+    let name := stx.getId.eraseMacroScopes
+    if introducedNames.contains name then
+      let some start := stx.getPos? | continue
+      let some stop := stx.getTailPos? | continue
+      arguments := arguments.push {
+        role := "fresh_name"
+        source := stx.reprint.getD name.toString |>.trim
+        syntaxKind := toString stx.getKind
+        sourceStart := start.byteIdx
+        sourceEnd := stop.byteIdx
+      }
+  return arguments
+
 @[export pantograph_frontend_collect_tactics_from_compilation_step_m]
 def collectTacticsFromCompilationStep (step : CompilationStep)
     (options : Protocol.Options := {}) : IO (List Protocol.InvokedTactic) := do
@@ -210,6 +262,7 @@ def collectTacticsFromCompilationStep (step : CompilationStep)
     try
       let terms ← outermostOwnedTerms invocation |>.toArray.mapM
         (serializeInvokedTerm invocation)
+      let syntaxArgs ← collectSyntaxArguments invocation
       let goalsBefore ← invocation.runMetaMGoalsBefore fun goals =>
         goals.toArray.mapM fun goal => do
           let decl ← goal.getDecl
@@ -218,7 +271,7 @@ def collectTacticsFromCompilationStep (step : CompilationStep)
         goals.toArray.mapM fun goal => do
           let decl ← goal.getDecl
           Pantograph.serializeGoal options goal decl
-      return { goalBefore, goalAfter, goalsBefore, goalsAfter, tactic, terms }
+      return { goalBefore, goalAfter, goalsBefore, goalsAfter, tactic, terms, syntaxArgs }
     catch e =>
       let captureError := toString e
       return {
