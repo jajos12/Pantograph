@@ -37,6 +37,21 @@ def findInvocation? (invocations : List Protocol.InvokedTactic)
     (tactic : String) : Option Protocol.InvokedTactic :=
   invocations.find? fun invocation => invocation.tactic.trim == tactic
 
+private def sourceSyntaxJson? (invocation : Protocol.InvokedTactic) : Option Json :=
+  Json.parse invocation.sourceSyntax |>.toOption
+
+private def sourceSyntaxRootSource? (invocation : Protocol.InvokedTactic) : Option String := do
+  let tree ← sourceSyntaxJson? invocation
+  tree.getObjValAs? String "source" |>.toOption
+
+private partial def sourceSyntaxHasLocal (tree : Json) (contextIndex : Nat) : Bool :=
+  let role := (tree.getObjValAs? String "semanticRole").toOption
+  let index := (tree.getObjValAs? Nat "contextIndex").toOption
+  let isMatch := role == some "local" && index == some contextIndex
+  if isMatch then true else
+    let children := tree.getObjValAs? (Array Json) "children" |>.toOption.getD #[]
+    children.any (sourceSyntaxHasLocal · contextIndex)
+
 def test_structured_tactic_terms : TestT MetaM Unit := do
   let source := "
 example (P Q : Prop) (f : P → Q) (h : P) : Q := by
@@ -66,6 +81,9 @@ example (P Q : Prop) : P ∧ Q → Q := by
 example (α : Type) (f g : α → Nat) (h : ∀ x, f x = g x) : f = g := by
   ext x
   exact h x
+
+example (P : Prop) (h : P) : P := by
+  exact (by exact h)
 "
   let invocations ← collectInvocationsFromSource source
   let application := findStructuredTerm? invocations "exact f h"
@@ -76,6 +94,7 @@ example (α : Type) (f g : α → Nat) (h : ∀ x, f x = g x) : f = g := by
   let introsInvocation := findInvocation? invocations "intros P Q x"
   let rintroInvocation := findInvocation? invocations "rintro ⟨x, y⟩"
   let extInvocation := findInvocation? invocations "ext x"
+  let nestedTacticInvocation := findInvocation? invocations "exact (by exact h)"
   addTest $ LSpec.check "application source" (application.map (·.source) == some "f h")
   addTest $ LSpec.check "application structure"
     (application.map (·.actionSexp) == some "(:app (:local FV3) (:local FV4))")
@@ -89,6 +108,18 @@ example (α : Type) (f g : α → Nat) (h : ∀ x, f x = g x) : f = g := by
       some "(:app (:local FV4) (:app (:local FV5) (:local FV6)))")
   addTest $ LSpec.check "rewrite local reference"
     (rewrite.map (·.actionSexp) == some "(:local FV3)")
+  addTest $ LSpec.check "application compact syntax source"
+    ((findInvocation? invocations "exact f h").map sourceSyntaxRootSource? ==
+      some (some "exact f h"))
+  addTest $ LSpec.check "application compact syntax semantic locals"
+    (((findInvocation? invocations "exact f h").bind sourceSyntaxJson?).map
+      (fun tree => sourceSyntaxHasLocal tree 3 && sourceSyntaxHasLocal tree 4) == some true)
+  addTest $ LSpec.check "nested tactic remains compact source syntax"
+    (nestedTacticInvocation.map sourceSyntaxRootSource? ==
+      some (some "exact (by exact h)"))
+  addTest $ LSpec.check "nested tactic preserves semantic local"
+    ((nestedTacticInvocation.bind sourceSyntaxJson?).map
+      (fun tree => sourceSyntaxHasLocal tree 2) == some true)
   addTest $ LSpec.check "intro fresh name"
     (introInvocation.map (·.syntaxArgs.map fun arg => (arg.role, arg.source)) ==
       some #[("fresh_name", "x")])

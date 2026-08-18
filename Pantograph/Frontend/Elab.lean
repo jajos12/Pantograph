@@ -161,6 +161,74 @@ private def termRange (term : Elab.TermInfo) : Option (Nat × Nat) := do
   let stop ← term.stx.getTailPos?
   pure (start.byteIdx, stop.byteIdx)
 
+private def syntaxRange (stx : Syntax) : Option (Nat × Nat) := do
+  let start ← stx.getPos?
+  let stop ← stx.getTailPos?
+  pure (start.byteIdx, stop.byteIdx)
+
+private def jsonObject (fields : List (String × Json)) : Json :=
+  Json.mkObj fields
+
+private def semanticReference?
+    (actionCtx : Pantograph.ModelSexpContext)
+    (termInfos : List Elab.TermInfo)
+    (stx : Syntax) : MetaM (List (String × Json)) := do
+  let some range := syntaxRange stx | return []
+  let some info := termInfos.find? fun info => termRange info == some range
+    | return []
+  let expression ← instantiateMVars info.expr
+  let head := expression.consumeMData.getAppFn.consumeMData
+  match head with
+  | .fvar fvarId =>
+    match actionCtx.fvarIndices.find? fvarId with
+    | some index =>
+      return [
+        ("semanticRole", .str "local"),
+        ("contextIndex", .num index),
+      ]
+    | none =>
+      -- This identifier belongs to a nested source scope, not the tactic's
+      -- input goal. Preserve its spelling without inventing a pointer target.
+      return [("semanticRole", .str "scoped_local")]
+  | .const declName _ =>
+    let env ← getEnv
+    return [
+      ("semanticRole", .str (if env.isConstructor declName then "constructor" else "global")),
+      ("name", .str declName.toString),
+    ]
+  | _ => return []
+
+private partial def serializeSourceSyntax
+    (actionCtx : Pantograph.ModelSexpContext)
+    (termInfos : List Elab.TermInfo)
+    (stx : Syntax) : MetaM Json := do
+  let source := stx.reprint.getD (toString stx) |>.trim
+  let positionFields := match syntaxRange stx with
+    | some (start, stop) => [("sourceStart", .num start), ("sourceEnd", .num stop)]
+    | none => []
+  match stx with
+  | .missing =>
+    return jsonObject <| [("tag", .str "missing")] ++ positionFields
+  | .atom _ value =>
+    return jsonObject <| [
+      ("tag", .str "atom"),
+      ("source", .str value),
+    ] ++ positionFields
+  | .ident _ rawValue _ _ =>
+    let semanticFields ← semanticReference? actionCtx termInfos stx
+    return jsonObject <| [
+      ("tag", .str "identifier"),
+      ("source", .str rawValue.toString),
+    ] ++ semanticFields ++ positionFields
+  | .node _ kind children =>
+    let serializedChildren ← children.mapM (serializeSourceSyntax actionCtx termInfos)
+    return jsonObject <| [
+      ("tag", .str "node"),
+      ("kind", .str kind.toString),
+      ("source", .str source),
+      ("children", .arr serializedChildren),
+    ] ++ positionFields
+
 /-- Keep one outermost elaborated term for each source range. -/
 private def outermostOwnedTerms (invocation : TacticInvocation) : List Elab.TermInfo :=
   let terms := invocation.children.toList.bind collectDescendantTerms |>.filter fun term =>
@@ -181,7 +249,8 @@ private def outermostOwnedTerms (invocation : TacticInvocation) : List Elab.Term
         selected ++ [term]
 
 private def serializeInvokedTerm
-    (invocation : TacticInvocation) (term : Elab.TermInfo) : IO Protocol.InvokedTerm := do
+    (invocation : TacticInvocation)
+    (term : Elab.TermInfo) : IO Protocol.InvokedTerm := do
   let some (sourceStart, sourceEnd) := termRange term
     | throw <| IO.userError "Elaborated tactic term has no source range"
   invocation.ctx.runMetaM {} <| Meta.withMCtx invocation.info.mctxAfter <|
@@ -198,6 +267,17 @@ private def serializeInvokedTerm
         sourceEnd
         actionSexp
       }
+
+private def serializeInvokedTacticSyntax
+    (invocation : TacticInvocation)
+    (termInfos : List Elab.TermInfo) : IO String := do
+  invocation.ctx.runMetaM {} <| Meta.withMCtx invocation.info.mctxAfter do
+    let some goal := invocation.info.goalsBefore.head?
+      | throwError "Tactic invocation has no input goal"
+    let goalDecl ← goal.getDecl
+    Meta.withLCtx goalDecl.lctx #[] do
+      let actionCtx ← Pantograph.mkModelSexpContext goalDecl.lctx
+      return (← serializeSourceSyntax actionCtx termInfos invocation.info.stx).compress
 
 private def isBinderIntroducingTactic (stx : Syntax) : Bool :=
   let kind := stx.getKind
@@ -260,8 +340,11 @@ def collectTacticsFromCompilationStep (step : CompilationStep)
     let goalAfter := (Format.joinSep (← invocation.goalStateAfter) "\n").pretty
     let tactic := invocation.info.stx.reprint.getD (toString invocation.info.stx)
     try
+      let termInfos := invocation.children.toList.bind collectDescendantTerms |>.filter fun term =>
+        (Elab.Info.ofTermInfo term).isOriginal && (termRange term).isSome
       let terms ← outermostOwnedTerms invocation |>.toArray.mapM
         (serializeInvokedTerm invocation)
+      let sourceSyntax ← serializeInvokedTacticSyntax invocation termInfos
       let syntaxArgs ← collectSyntaxArguments invocation
       let goalsBefore ← invocation.runMetaMGoalsBefore fun goals =>
         goals.toArray.mapM fun goal => do
@@ -271,7 +354,9 @@ def collectTacticsFromCompilationStep (step : CompilationStep)
         goals.toArray.mapM fun goal => do
           let decl ← goal.getDecl
           Pantograph.serializeGoal options goal decl
-      return { goalBefore, goalAfter, goalsBefore, goalsAfter, tactic, terms, syntaxArgs }
+      return {
+        goalBefore, goalAfter, goalsBefore, goalsAfter, tactic, sourceSyntax, terms, syntaxArgs
+      }
     catch e =>
       let captureError := toString e
       return {

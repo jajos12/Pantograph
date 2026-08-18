@@ -336,6 +336,12 @@ structure InvokedTactic where
   goalsAfter: Array Goal
   captureError?: Option String := .none
   tactic: String
+  /--
+  Compact JSON encoding of the complete original tactic syntax, annotated with
+  semantic references resolved by Lean. This is the primary generation target;
+  elaborated term trees remain available as diagnostics.
+  -/
+  sourceSyntax: String := ""
   /-- Outermost elaborated term arguments owned by this tactic invocation. -/
   terms: Array InvokedTerm := #[]
   /-- Non-term tactic arguments, such as names of freshly introduced binders. -/
