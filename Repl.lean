@@ -122,8 +122,9 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
     let state ← get
     let .some goalState := state.goalStates.find? args.stateId |
       return .error $ errorIndex s!"Invalid state index {args.stateId}"
-    let .some goal := goalState.goals.get? args.goalId |
-      return .error $ errorIndex s!"Invalid goal index {args.goalId}"
+    let goalId := args.goalId?.getD 0
+    let .some goal := goalState.goals.get? goalId |
+      return .error $ errorIndex s!"Invalid goal index {goalId}"
     let nextGoalState?: Except _ TacticResult ← runTermElabInMainM do
       match args.tactic?, args.expr?, args.have?, args.calc?, args.conv?  with
       | .some tactic, .none, .none, .none, .none => do
@@ -160,13 +161,22 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
       return .ok {
         nextStateId? := .some nextStateId,
         goals? := .some goals,
+        messages := #[],
+        hasSorry := false,
+        hasUnsafe := false,
       }
     | .ok (.parseError message) =>
-      return .ok { parseError? := .some message }
+      return .ok { 
+        parseError? := .some message,
+        messages := #[message],
+      }
     | .ok (.invalidAction message) =>
       return .error $ errorI "invalid" message
     | .ok (.failure messages) =>
-      return .ok { tacticErrors? := .some messages }
+      return .ok { 
+        tacticErrors? := .some messages,
+        messages := messages,
+      }
   goal_continue (args: Protocol.GoalContinue): MainM (CR Protocol.GoalContinueResult) := do
     let state ← get
     let .some target := state.goalStates.find? args.target | return .error $ errorIndex s!"Invalid state index {args.target}"
