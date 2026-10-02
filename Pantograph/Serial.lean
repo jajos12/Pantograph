@@ -511,10 +511,12 @@ def serializeGoal (options: @&Protocol.Options) (goal: MVarId) (mvarDecl: Metava
           | true => ppVarNameOnly localDecl
           | false => ppVar localDecl
         return var::acc
+    let isConv := isLHSGoal? mvarDecl.type |>.isSome
     return {
       name := ofName goal.name,
       userName? := if mvarDecl.userName == .anonymous then .none else .some (ofName mvarDecl.userName),
-      isConversion := isLHSGoal? mvarDecl.type |>.isSome,
+      isConversion := isConv,
+      fragment := if isConv then "conv" else "tactic",
       target := (← serializeExpression options (← instantiate mvarDecl.type) modelCtx),
       vars := vars.reverse.toArray
     }
