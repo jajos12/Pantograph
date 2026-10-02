@@ -77,6 +77,8 @@ structure Goal where
   userName?: Option String  := .none
   /-- Is the goal in conversion mode -/
   isConversion: Bool        := false
+  /-- Mode / fragment for client compatibility (tactic, conv, calc) -/
+  fragment: String          := "tactic"
   /-- target expression type -/
   target: Expression
   /-- Variables -/
@@ -229,7 +231,7 @@ structure GoalStartResult where
 structure GoalTactic where
   -- Identifiers for tree, state, and goal
   stateId: Nat
-  goalId: Nat := 0
+  goalId?: Option Nat := .none
   -- One of the fields here must be filled
   tactic?: Option String := .none
   expr?: Option String := .none
@@ -253,6 +255,13 @@ structure GoalTacticResult where
 
   -- Existence of this field shows the tactic parsing has failed
   parseError?: Option String := .none
+
+  -- Diagnostic / error messages from execution
+  messages: Array String := #[]
+
+  -- Soundness audit flags expected by modern clients
+  hasSorry: Bool := false
+  hasUnsafe: Bool := false
   deriving Lean.ToJson
 structure GoalContinue where
   -- State from which the continuation acquires the context
