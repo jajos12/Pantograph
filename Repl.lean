@@ -158,24 +158,28 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
         | false, _ => pure nextGoalState
       let nextStateId ← newGoalState nextGoalState
       let goals ← nextGoalState.serializeGoals (parent := .some goalState) (options := state.options) |>.run'
+      -- Compute soundness audit flags from the proof expression
+      let parentExpr? := nextGoalState.parentExpr?
+      let hasSorry := parentExpr?.map (·.hasSorry) |>.getD false
+      let hasUnsafe := false -- TODO: requires env.isUnsafe check on all referenced constants
       return .ok {
         nextStateId? := .some nextStateId,
         goals? := .some goals,
         messages := #[],
-        hasSorry := false,
-        hasUnsafe := false,
+        hasSorry,
+        hasUnsafe,
       }
     | .ok (.parseError message) =>
       return .ok { 
         parseError? := .some message,
-        messages := #[message],
+        messages := #[Protocol.Message.error message],
       }
     | .ok (.invalidAction message) =>
       return .error $ errorI "invalid" message
     | .ok (.failure messages) =>
       return .ok { 
         tacticErrors? := .some messages,
-        messages := messages,
+        messages := messages.map Protocol.Message.error,
       }
   goal_continue (args: Protocol.GoalContinue): MainM (CR Protocol.GoalContinueResult) := do
     let state ← get

@@ -432,6 +432,7 @@ def serializeExpression
 
 /-- Adapted from ppGoal -/
 def serializeGoal (options: @&Protocol.Options) (goal: MVarId) (mvarDecl: MetavarDecl) (parentDecl?: Option MetavarDecl := .none)
+      (goalState?: Option GoalState := .none)
       : MetaM Protocol.Goal := do
   -- Options for printing; See Meta.ppGoal for details
   let showLetValues  := true
@@ -512,11 +513,13 @@ def serializeGoal (options: @&Protocol.Options) (goal: MVarId) (mvarDecl: Metava
           | false => ppVar localDecl
         return var::acc
     let isConv := isLHSGoal? mvarDecl.type |>.isSome
+    let isCalc := goalState?.map (·.calcPrevRhsOf? goal |>.isSome) |>.getD false
+    let fragment := if isConv then "conv" else if isCalc then "calc" else "tactic"
     return {
       name := ofName goal.name,
       userName? := if mvarDecl.userName == .anonymous then .none else .some (ofName mvarDecl.userName),
       isConversion := isConv,
-      fragment := if isConv then "conv" else "tactic",
+      fragment,
       target := (← serializeExpression options (← instantiate mvarDecl.type) modelCtx),
       vars := vars.reverse.toArray
     }
@@ -535,7 +538,7 @@ protected def GoalState.serializeGoals
   goals.mapM fun goal => do
     match state.mctx.findDecl? goal with
     | .some mvarDecl =>
-      let serializedGoal ← serializeGoal options goal mvarDecl (parentDecl? := parentDecl?)
+      let serializedGoal ← serializeGoal options goal mvarDecl (parentDecl? := parentDecl?) (goalState? := .some state)
       pure serializedGoal
     | .none => throwError s!"Metavariable does not exist in context {goal.name}"
 

@@ -243,7 +243,30 @@ structure GoalTactic where
   -- In case of the `have` tactic, the new free variable name is provided here
   binderName?: Option String := .none
 
+  -- Modern PyPantograph tactic modes (accepted but not yet handled)
+  let?: Option String := .none
+  draft?: Option String := .none
+  mode?: Option Nat := .none
+  autoResume?: Option Bool := .none
+
   deriving Lean.FromJson
+
+/-- Structured message matching PyPantograph's Message.parse format -/
+structure MessagePos where
+  line: Nat := 0
+  column: Nat := 0
+  deriving Lean.ToJson
+structure Message where
+  -- Severity: 1=information, 2=warning, 3=error
+  severity: Nat := 3
+  pos: MessagePos := {}
+  pos_end: Option MessagePos := .none
+  data: String := ""
+  deriving Lean.ToJson
+
+/-- Helper to create an error message from a plain string -/
+def Message.error (s : String) : Message := { severity := 3, data := s }
+
 structure GoalTacticResult where
   -- The next goal state id. Existence of this field shows success
   nextStateId?: Option Nat          := .none
@@ -256,8 +279,8 @@ structure GoalTacticResult where
   -- Existence of this field shows the tactic parsing has failed
   parseError?: Option String := .none
 
-  -- Diagnostic / error messages from execution
-  messages: Array String := #[]
+  -- Structured diagnostic / error messages from execution
+  messages: Array Message := #[]
 
   -- Soundness audit flags expected by modern clients
   hasSorry: Bool := false
