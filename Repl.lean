@@ -125,39 +125,49 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
     let goalId := args.goalId?.getD 0
     let .some goal := goalState.goals.get? goalId |
       return .error $ errorIndex s!"Invalid goal index {goalId}"
-    let conv? := match args.conv?, args.mode? with
+    let conv? : Option Bool := match args.conv?, args.mode? with
       | .some b, _ => .some b
       | .none, .some "conv" => .some true
       | .none, .some "tactic" => if goalState.convMVar?.isSome then .some false else .none
       | .none, _ => .none
+    let isConvExit := conv? == .some false
     let nextGoalState?: Except _ TacticResult ← runTermElabInMainM do
-      match args.tactic?, args.expr?, args.have?, args.calc?, conv? with
-      | .some tactic, .none, .none, .none, .none => do
+      match args.tactic?, args.expr?, args.have?, args.let?, args.calc?, args.conv?, args.mode? with
+      | .some tactic, .none, .none, .none, .none, .none, .none => do
         pure <| Except.ok <| ← goalState.tryTactic goal tactic
-      | .none, .some expr, .none, .none, .none => do
+      | .none, .some expr, .none, .none, .none, .none, .none => do
         pure <| Except.ok <| ← goalState.tryAssign goal expr
-      | .none, .none, .some type, .none, .none => do
+      | .none, .none, .some type, .none, .none, .none, .none => do
         let binderName := args.binderName?.getD ""
         pure <| Except.ok <| ← goalState.tryHave goal binderName type
-      | .none, .none, .none, .some pred, .none => do
+      | .none, .none, .none, .some type, .none, .none, .none => do
+        let binderName := args.binderName?.getD ""
+        pure <| Except.ok <| ← goalState.tryLet goal binderName type
+      | .none, .none, .none, .none, .some pred, .none, .none => do
         pure <| Except.ok <| ← goalState.tryCalc goal pred
-      | .none, .none, .none, .none, .some true => do
+      | .none, .none, .none, .none, .none, .some true, .none
+      | .none, .none, .none, .none, .none, .none, .some "conv" => do
         pure <| Except.ok <| ← goalState.conv goal
-      | .none, .none, .none, .none, .some false => do
+      | .none, .none, .none, .none, .none, .some false, .none
+      | .none, .none, .none, .none, .none, .none, .some "tactic" => do
         pure <| Except.ok <| ← goalState.convExit
-      | _, _, _, _, _ =>
-        let error := errorI "arguments" "Exactly one of {tactic, expr, have, calc, conv, mode} must be supplied"
+      | .none, .none, .none, .none, .none, .none, .some "calc" => do
+        pure <| Except.ok <| .invalidAction "calc mode is entered via 'calc' parameter with a step predicate, not via 'mode'"
+      | _, _, _, _, _, _, _ =>
+        let error := errorI "arguments" "Exactly one of {tactic, expr, have, let, calc, conv, mode} must be supplied"
         pure $ Except.error $ error
     match nextGoalState? with
     | .error error => return .error error
     | .ok (.success nextGoalState) => do
       let autoMode := args.autoResume?.getD state.options.automaticMode
-      let nextGoalState ← match autoMode, conv? with
-        | true, .none => do
-          let .ok result := nextGoalState.resume (nextGoalState.goals ++ goalState.goals) | throwError "Resuming known goals"
-          pure result
-        | true, .some true => pure nextGoalState
-        | true, .some false => do
+      let nextGoalState ← match autoMode, isConvExit with
+        | true, false => do
+          if goalState.convMVar?.isNone && nextGoalState.convMVar?.isNone then
+            let .ok result := nextGoalState.resume (nextGoalState.goals ++ goalState.goals) | throwError "Resuming known goals"
+            pure result
+          else
+            pure nextGoalState
+        | true, true => do
           let .some (_, _, dormantGoals) := goalState.convMVar? | throwError "If conv exit succeeded this should not fail"
           let .ok result := nextGoalState.resume (nextGoalState.goals ++ dormantGoals) | throwError "Resuming known goals"
           pure result
@@ -165,9 +175,14 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
       let nextStateId ← newGoalState nextGoalState
       let goals ← nextGoalState.serializeGoals (parent := .some goalState) (options := state.options) |>.run'
       -- Compute soundness audit flags from the proof expression
+      let env ← Lean.MonadEnv.getEnv
       let parentExpr? := nextGoalState.parentExpr?
       let hasSorry := parentExpr?.map (·.hasSorry) |>.getD false
-      let hasUnsafe := false -- TODO: requires env.isUnsafe check on all referenced constants
+      let hasUnsafe := parentExpr?.map (fun expr =>
+        expr.getUsedConstants.any (fun constName =>
+          (env.find? constName).map (·.isUnsafe) |>.getD false
+        )
+      ) |>.getD false
       return .ok {
         nextStateId? := .some nextStateId,
         goals? := .some goals,

@@ -231,19 +231,52 @@ def test_frontend_process_sorry : Test :=
 
 
 def test_protocol_compat : Test :=
+  let goal1: Protocol.Goal := {
+    name := "_uniq.15",
+    target := { pp? := .some "p" },
+    vars := #[
+      { name := "_uniq.10", userName := "p", type? := .some { pp? := .some "Prop" }},
+      { name := "_uniq.14", userName := "h", type? := .some { pp? := .some "p" }}
+    ]
+  }
   [
     step "goal.start" [("expr", .str "∀ (p: Prop), p → p")]
      ({ stateId := 0, root := "_uniq.9" }: Protocol.GoalStartResult),
-    -- Omit goalId (defaults to 0)
+    -- 1. Omit goalId (defaults to 0)
     step "goal.tactic" [("stateId", .num 0), ("tactic", .str "intro p h")]
-     ({ nextStateId? := .some 1, goals? := #[{
-       name := "_uniq.15",
-       target := { pp? := .some "p" },
-       vars := #[
-         { name := "_uniq.10", userName := "p", type? := .some { pp? := .some "Prop" }},
-         { name := "_uniq.14", userName := "h", type? := .some { pp? := .some "p" }}
-       ]
-     }], }: Protocol.GoalTacticResult),
+     ({ nextStateId? := .some 1, goals? := #[goal1] }: Protocol.GoalTacticResult),
+    -- 2. Tactic failure: returns structured message objects with kind, severity, pos, data
+    step "goal.tactic" [("stateId", .num 1), ("tactic", .str "rfl")]
+     ({
+       tacticErrors? := .some #["tactic 'rfl' failed, equality or iff expected\n  p"],
+       messages := #[{
+         kind := "[anonymous]",
+         severity := "error",
+         pos := { line := 0, column := 0 },
+         endPos? := .none,
+         data := "tactic 'rfl' failed, equality or iff expected\n  p"
+       }]
+     }: Protocol.GoalTacticResult),
+    -- 3. Sorry detection: returns hasSorry := true
+    step "goal.tactic" [("stateId", .num 1), ("tactic", .str "sorry")]
+     ({ nextStateId? := .some 2, goals? := #[], hasSorry := true }: Protocol.GoalTacticResult),
+    -- 4. Conv mode entry and exit via mode parameter
+    step "goal.start" [("expr", .str "1 + 2 = 3")]
+     ({ stateId := 3, root := "_uniq.18" }: Protocol.GoalStartResult),
+    step "goal.tactic" [("stateId", .num 3), ("mode", .str "conv")]
+     ({ nextStateId? := .some 4, goals? := #[{
+       name := "_uniq.21",
+       isConversion := true,
+       fragment := "conv",
+       target := { pp? := .some "1 + 2 = 3" },
+       vars := #[]
+     }] }: Protocol.GoalTacticResult),
+    step "goal.tactic" [("stateId", .num 4), ("mode", .str "tactic")]
+     ({ nextStateId? := .some 5, goals? := #[{
+       name := "_uniq.20",
+       target := { pp? := .some "1 + 2 = 3" },
+       vars := #[]
+     }] }: Protocol.GoalTacticResult),
   ]
 
 def runTest (env: Lean.Environment) (steps: Test): IO LSpec.TestSeq := do
