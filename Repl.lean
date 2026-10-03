@@ -125,8 +125,13 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
     let goalId := args.goalId?.getD 0
     let .some goal := goalState.goals.get? goalId |
       return .error $ errorIndex s!"Invalid goal index {goalId}"
+    let conv? := match args.conv?, args.mode? with
+      | .some b, _ => .some b
+      | .none, .some "conv" => .some true
+      | .none, .some "tactic" => if goalState.convMVar?.isSome then .some false else .none
+      | .none, _ => .none
     let nextGoalState?: Except _ TacticResult ← runTermElabInMainM do
-      match args.tactic?, args.expr?, args.have?, args.calc?, args.conv?  with
+      match args.tactic?, args.expr?, args.have?, args.calc?, conv? with
       | .some tactic, .none, .none, .none, .none => do
         pure <| Except.ok <| ← goalState.tryTactic goal tactic
       | .none, .some expr, .none, .none, .none => do
@@ -141,12 +146,13 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
       | .none, .none, .none, .none, .some false => do
         pure <| Except.ok <| ← goalState.convExit
       | _, _, _, _, _ =>
-        let error := errorI "arguments" "Exactly one of {tactic, expr, have, calc, conv} must be supplied"
+        let error := errorI "arguments" "Exactly one of {tactic, expr, have, calc, conv, mode} must be supplied"
         pure $ Except.error $ error
     match nextGoalState? with
     | .error error => return .error error
     | .ok (.success nextGoalState) => do
-      let nextGoalState ← match state.options.automaticMode, args.conv? with
+      let autoMode := args.autoResume?.getD state.options.automaticMode
+      let nextGoalState ← match autoMode, conv? with
         | true, .none => do
           let .ok result := nextGoalState.resume (nextGoalState.goals ++ goalState.goals) | throwError "Resuming known goals"
           pure result

@@ -243,10 +243,10 @@ structure GoalTactic where
   -- In case of the `have` tactic, the new free variable name is provided here
   binderName?: Option String := .none
 
-  -- Modern PyPantograph tactic modes (accepted but not yet handled)
+  -- Modern PyPantograph tactic modes
   let?: Option String := .none
   draft?: Option String := .none
-  mode?: Option Nat := .none
+  mode?: Option String := .none
   autoResume?: Option Bool := .none
 
   deriving Lean.FromJson
@@ -255,17 +255,17 @@ structure GoalTactic where
 structure MessagePos where
   line: Nat := 0
   column: Nat := 0
-  deriving Lean.ToJson
+  deriving Lean.ToJson, Lean.FromJson, DecidableEq, Repr
 structure Message where
-  -- Severity: 1=information, 2=warning, 3=error
-  severity: Nat := 3
+  kind: String := "[anonymous]"
+  severity: String := "error"
   pos: MessagePos := {}
-  pos_end: Option MessagePos := .none
+  endPos?: Option MessagePos := .none
   data: String := ""
-  deriving Lean.ToJson
+  deriving Lean.ToJson, Lean.FromJson, DecidableEq, Repr
 
 /-- Helper to create an error message from a plain string -/
-def Message.error (s : String) : Message := { severity := 3, data := s }
+def Message.error (s : String) : Message := { severity := "error", data := s }
 
 structure GoalTacticResult where
   -- The next goal state id. Existence of this field shows success

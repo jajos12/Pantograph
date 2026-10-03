@@ -230,6 +230,22 @@ def test_frontend_process_sorry : Test :=
   ]
 
 
+def test_protocol_compat : Test :=
+  [
+    step "goal.start" [("expr", .str "∀ (p: Prop), p → p")]
+     ({ stateId := 0, root := "_uniq.9" }: Protocol.GoalStartResult),
+    -- Omit goalId (defaults to 0)
+    step "goal.tactic" [("stateId", .num 0), ("tactic", .str "intro p h")]
+     ({ nextStateId? := .some 1, goals? := #[{
+       name := "_uniq.15",
+       target := { pp? := .some "p" },
+       vars := #[
+         { name := "_uniq.10", userName := "p", type? := .some { pp? := .some "Prop" }},
+         { name := "_uniq.14", userName := "h", type? := .some { pp? := .some "p" }}
+       ]
+     }], }: Protocol.GoalTacticResult),
+  ]
+
 def runTest (env: Lean.Environment) (steps: Test): IO LSpec.TestSeq := do
   -- Setup the environment for execution
   let context: Context := {
@@ -250,6 +266,7 @@ def suite (env : Lean.Environment): List (String × IO LSpec.TestSeq) :=
     ("Tactic", test_tactic),
     ("Manual Mode", test_automatic_mode false),
     ("Automatic Mode", test_automatic_mode true),
+    ("Protocol Compatibility", test_protocol_compat),
     ("env.add env.inspect", test_env_add_inspect),
     -- The source-trace fork intentionally retains combinator and nested
     -- invocations, so the upstream test's exact two-invocation snapshot is no
