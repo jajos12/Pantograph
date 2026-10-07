@@ -122,35 +122,58 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
     let state ← get
     let .some goalState := state.goalStates.find? args.stateId |
       return .error $ errorIndex s!"Invalid state index {args.stateId}"
-    let goalId := args.goalId?.getD 0
-    let .some goal := goalState.goals.get? goalId |
-      return .error $ errorIndex s!"Invalid goal index {goalId}"
     let conv? : Option Bool := match args.conv?, args.mode? with
       | .some b, _ => .some b
       | .none, .some "conv" => .some true
       | .none, .some "tactic" => if goalState.convMVar?.isSome then .some false else .none
       | .none, _ => .none
     let isConvExit := conv? == .some false
+    let goalId := args.goalId?.getD 0
+    let goal? := goalState.goals.get? goalId
+    if !isConvExit && goal?.isNone then
+      return .error $ errorIndex s!"Invalid goal index {goalId}"
+    -- Conv exit ignores goalId and remains valid after its final inner goal closes.
+    let goal := goal?.getD goalState.root
+    let autoMode := args.autoResume?.getD state.options.automaticMode
     let nextGoalState?: Except _ TacticResult ← runTermElabInMainM do
+      let finalize (result : TacticResult) : Lean.Elab.TermElabM TacticResult := do
+        let .success nextGoalState := result | pure result
+        if goalState.convMVar?.isNone || nextGoalState.convMVar?.isNone then
+          return result
+        let siblingGoals := goalState.goals.filter (· != goal)
+        let .ok resumedState := nextGoalState.resume (nextGoalState.goals ++ siblingGoals) |
+          return .invalidAction "Failed to resume conversion goals"
+        if !resumedState.goals.isEmpty then
+          return if autoMode then .success resumedState else result
+        match ← resumedState.convExit with
+        | .success exitedState =>
+          if autoMode then
+            let dormantGoals := goalState.convMVar?.map (fun (_, _, goals) => goals) |>.getD []
+            match exitedState.resume (exitedState.goals ++ dormantGoals) with
+            | .ok resumedState => pure <| .success resumedState
+            | .error error => pure <| .invalidAction error
+          else
+            pure <| .success exitedState
+        | other => pure other
       match args.tactic?, args.expr?, args.have?, args.let?, args.calc?, args.conv?, args.mode? with
       | .some tactic, .none, .none, .none, .none, .none, .none => do
-        pure <| Except.ok <| ← goalState.tryTactic goal tactic
+        pure <| Except.ok <| ← finalize <| ← goalState.tryTactic goal tactic
       | .none, .some expr, .none, .none, .none, .none, .none => do
-        pure <| Except.ok <| ← goalState.tryAssign goal expr
+        pure <| Except.ok <| ← finalize <| ← goalState.tryAssign goal expr
       | .none, .none, .some type, .none, .none, .none, .none => do
         let binderName := args.binderName?.getD ""
-        pure <| Except.ok <| ← goalState.tryHave goal binderName type
+        pure <| Except.ok <| ← finalize <| ← goalState.tryHave goal binderName type
       | .none, .none, .none, .some type, .none, .none, .none => do
         let binderName := args.binderName?.getD ""
-        pure <| Except.ok <| ← goalState.tryLet goal binderName type
+        pure <| Except.ok <| ← finalize <| ← goalState.tryLet goal binderName type
       | .none, .none, .none, .none, .some pred, .none, .none => do
-        pure <| Except.ok <| ← goalState.tryCalc goal pred
+        pure <| Except.ok <| ← finalize <| ← goalState.tryCalc goal pred
       | .none, .none, .none, .none, .none, .some true, .none
       | .none, .none, .none, .none, .none, .none, .some "conv" => do
-        pure <| Except.ok <| ← goalState.conv goal
+        pure <| Except.ok <| ← finalize <| ← goalState.conv goal
       | .none, .none, .none, .none, .none, .some false, .none
       | .none, .none, .none, .none, .none, .none, .some "tactic" => do
-        pure <| Except.ok <| ← goalState.convExit
+        pure <| Except.ok <| ← finalize <| ← goalState.convExit
       | .none, .none, .none, .none, .none, .none, .some "calc" => do
         pure <| Except.ok <| .invalidAction "calc mode is entered via 'calc' parameter with a step predicate, not via 'mode'"
       | _, _, _, _, _, _, _ =>
@@ -159,7 +182,6 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
     match nextGoalState? with
     | .error error => return .error error
     | .ok (.success nextGoalState) => do
-      let autoMode := args.autoResume?.getD state.options.automaticMode
       let nextGoalState ← match autoMode, isConvExit with
         | true, false => do
           if goalState.convMVar?.isNone && nextGoalState.convMVar?.isNone then
@@ -174,11 +196,12 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
         | false, _ => pure nextGoalState
       let nextStateId ← newGoalState nextGoalState
       let goals ← nextGoalState.serializeGoals (parent := .some goalState) (options := state.options) |>.run'
-      -- Compute soundness audit flags from the proof expression
+      -- Fragment entry can leave the parent unassigned; parentExpr? handles it.
+      -- Auditing the parent also catches sorry/unsafe use in partial branches.
       let env ← Lean.MonadEnv.getEnv
-      let parentExpr? := nextGoalState.parentExpr?
-      let hasSorry := parentExpr?.map (·.hasSorry) |>.getD false
-      let hasUnsafe := parentExpr?.map (fun expr =>
+      let proofExpr? := nextGoalState.parentExpr?
+      let hasSorry := proofExpr?.map (·.hasSorry) |>.getD false
+      let hasUnsafe := proofExpr?.map (fun expr =>
         expr.getUsedConstants.any (fun constName =>
           (env.find? constName).map (·.isUnsafe) |>.getD false
         )
@@ -191,14 +214,14 @@ def execute (command: Protocol.Command): MainM Lean.Json := do
         hasUnsafe,
       }
     | .ok (.parseError message) =>
-      return .ok { 
+      return .ok {
         parseError? := .some message,
         messages := #[Protocol.Message.error message],
       }
     | .ok (.invalidAction message) =>
       return .error $ errorI "invalid" message
     | .ok (.failure messages) =>
-      return .ok { 
+      return .ok {
         tacticErrors? := .some messages,
         messages := messages.map Protocol.Message.error,
       }

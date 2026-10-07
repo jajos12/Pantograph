@@ -166,7 +166,7 @@ protected def GoalState.rootExpr? (goalState: GoalState): Option Expr := do
 @[export pantograph_goal_state_parent_expr]
 protected def GoalState.parentExpr? (goalState: GoalState): Option Expr := do
   let parent ← goalState.parentMVar?
-  let expr := goalState.mctx.eAssignment.find! parent
+  let expr ← goalState.mctx.eAssignment.find? parent
   let (expr, _) := instantiateMVarsCore (mctx := goalState.mctx) (e := expr)
   return expr
 @[export pantograph_goal_state_get_mvar_e_assignment]
@@ -215,9 +215,10 @@ protected def GoalState.tryTacticM (state: GoalState) (goal: MVarId) (tacticM: E
 protected def GoalState.tryTactic (state: GoalState) (goal: MVarId) (tactic: String):
     Elab.TermElabM TacticResult := do
   state.restoreElabM
+  let isConvGoal := isLHSGoal? (← goal.getType) |>.isSome
   let tactic ← match Parser.runParserCategory
     (env := ← MonadEnv.getEnv)
-    (catName := if state.isConv then `conv else `tactic)
+    (catName := if isConvGoal then `conv else `tactic)
     (input := tactic)
     (fileName := filename) with
     | .ok stx => pure $ stx
@@ -300,9 +301,10 @@ protected def GoalState.convExit (state: GoalState):
     Elab.Tactic.setGoals [convGoal]
 
     let targetNew ← instantiateMVars (.mvar convRhs)
-    let proof ← instantiateMVars (.mvar convGoal)
-
-    Elab.Tactic.liftMetaTactic1 fun mvarId => mvarId.replaceTargetEq targetNew proof
+    let targetOld ← convGoal.getType
+    unless ← Meta.isDefEqGuarded targetNew targetOld do
+      let proof ← instantiateMVars (.mvar convGoal)
+      Elab.Tactic.liftMetaTactic1 fun mvarId => mvarId.replaceTargetEq targetNew proof
     MonadBacktrack.saveState
   try
     let nextSavedState ← tacticM { elaborator := .anonymous } |>.run' state.savedState.tactic

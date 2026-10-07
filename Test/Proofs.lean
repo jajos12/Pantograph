@@ -501,7 +501,7 @@ def test_calc: TestM Unit := do
   addTest $ LSpec.check s!"calc {pred} := _" ((← state2.serializeGoals (options := ← read)).map (·.devolatilize) =
     #[
       interiorGoal [] "a + b = b + c" (.some "calc"),
-      interiorGoal [] "b + c = c + d"
+      { interiorGoal [] "b + c = c + d" with fragment := "calc" }
     ])
   addTest $ LSpec.test "(2.0 prev rhs)" (state2.calcPrevRhsOf? (state2.get! 0) |>.isNone)
   addTest $ LSpec.test "(2.1 prev rhs)" (state2.calcPrevRhsOf? (state2.get! 1) |>.isSome)
