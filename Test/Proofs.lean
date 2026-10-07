@@ -386,7 +386,7 @@ def test_conv: TestM Unit := do
       addTest $ assertUnreachable $ other.toString
       return ()
   addTest $ LSpec.check "conv => ..." ((← state2.serializeGoals (options := ← read)).map (·.devolatilize) =
-    #[{ interiorGoal [] "a + b + c1 = b + a + c2" with isConversion := true }])
+    #[{ interiorGoal [] "a + b + c1 = b + a + c2" with isConversion := true, fragment := "conv" }])
 
   let convTactic := "rhs"
   let state3R ← match ← state2.tacticOn (goalId := 0) convTactic with
@@ -395,7 +395,7 @@ def test_conv: TestM Unit := do
       addTest $ assertUnreachable $ other.toString
       return ()
   addTest $ LSpec.check s!"  {convTactic} (discard)" ((← state3R.serializeGoals (options := ← read)).map (·.devolatilize) =
-    #[{ interiorGoal [] "b + a + c2" with isConversion := true }])
+    #[{ interiorGoal [] "b + a + c2" with isConversion := true, fragment := "conv" }])
 
   let convTactic := "lhs"
   let state3L ← match ← state2.tacticOn (goalId := 0) convTactic with
@@ -404,7 +404,7 @@ def test_conv: TestM Unit := do
       addTest $ assertUnreachable $ other.toString
       return ()
   addTest $ LSpec.check s!"  {convTactic}" ((← state3L.serializeGoals (options := ← read)).map (·.devolatilize) =
-    #[{ interiorGoal [] "a + b + c1" with isConversion := true }])
+    #[{ interiorGoal [] "a + b + c1" with isConversion := true, fragment := "conv" }])
 
   let convTactic := "congr"
   let state4 ← match ← state3L.tacticOn (goalId := 0) convTactic with
@@ -414,8 +414,8 @@ def test_conv: TestM Unit := do
       return ()
   addTest $ LSpec.check s!"  {convTactic}" ((← state4.serializeGoals (options := ← read)).map (·.devolatilize) =
     #[
-      { interiorGoal [] "a + b" with isConversion := true, userName? := .some "a" },
-      { interiorGoal [] "c1" with isConversion := true, userName? := .some "a" }
+      { interiorGoal [] "a + b" with isConversion := true, fragment := "conv", userName? := .some "a" },
+      { interiorGoal [] "c1" with isConversion := true, fragment := "conv", userName? := .some "a" }
     ])
 
   let convTactic := "rw [Nat.add_comm]"
@@ -425,7 +425,7 @@ def test_conv: TestM Unit := do
       addTest $ assertUnreachable $ other.toString
       return ()
   addTest $ LSpec.check s!"  · {convTactic}" ((← state5_1.serializeGoals (options := ← read)).map (·.devolatilize) =
-    #[{ interiorGoal [] "b + a" with isConversion := true, userName? := .some "a" }])
+    #[{ interiorGoal [] "b + a" with isConversion := true, fragment := "conv", userName? := .some "a" }])
 
   let convTactic := "rfl"
   let state6_1 ← match ← state5_1.tacticOn (goalId := 0) convTactic with
@@ -501,7 +501,7 @@ def test_calc: TestM Unit := do
   addTest $ LSpec.check s!"calc {pred} := _" ((← state2.serializeGoals (options := ← read)).map (·.devolatilize) =
     #[
       interiorGoal [] "a + b = b + c" (.some "calc"),
-      interiorGoal [] "b + c = c + d"
+      { interiorGoal [] "b + c = c + d" with fragment := "calc" }
     ])
   addTest $ LSpec.test "(2.0 prev rhs)" (state2.calcPrevRhsOf? (state2.get! 0) |>.isNone)
   addTest $ LSpec.test "(2.1 prev rhs)" (state2.calcPrevRhsOf? (state2.get! 1) |>.isSome)

@@ -15,6 +15,22 @@ def step { α } [Lean.ToJson α] (cmd: String) (payload: List (String × Lean.Js
   let result ← Repl.execute { cmd, payload }
   return LSpec.test name (toString result = toString (Lean.toJson expected))
 
+def stepGoalFragments (payload: List (String × Lean.Json)) (expected: Array String):
+    MainM LSpec.TestSeq := do
+  let payloadJson := Lean.Json.mkObj payload
+  let result ← Repl.execute { cmd := "goal.tactic", payload := payloadJson }
+  let actual : Option (Array String) := match result.getObjValAs? (Array Lean.Json) "goals" with
+    | .ok goals => match goals.mapM (fun goal => goal.getObjValAs? String "fragment") with
+      | .ok fragments => .some fragments
+      | .error _ => .none
+    | .error _ => .none
+  return LSpec.test s!"goal.tactic fragments {payloadJson.compress}" (actual = .some expected)
+
+def stepGoalStart (expr: String) (expectedStateId: Nat): MainM LSpec.TestSeq := do
+  let result ← Repl.execute { cmd := "goal.start", payload := Lean.Json.mkObj [("expr", .str expr)] }
+  let actual := result.getObjValAs? Nat "stateId" |>.toOption
+  return LSpec.test s!"goal.start state {expr}" (actual = .some expectedStateId)
+
 abbrev Test := List (MainM LSpec.TestSeq)
 
 def test_elab : Test :=
@@ -230,6 +246,77 @@ def test_frontend_process_sorry : Test :=
   ]
 
 
+def test_protocol_compat : Test :=
+  let goal1: Protocol.Goal := {
+    name := "_uniq.12",
+    target := { pp? := .some "p" },
+    vars := #[
+      { name := "_uniq.8", userName := "p", type? := .some { pp? := .some "Prop" }},
+      { name := "_uniq.11", userName := "h", type? := .some { pp? := .some "p" }}
+    ]
+  }
+  let convGoal: Protocol.Goal := {
+    name := "_uniq.98",
+    isConversion := true,
+    fragment := "conv",
+    target := { pp? := .some "1 + 2 = 3" },
+    vars := #[]
+  }
+  let exitedConvGoal: Protocol.Goal := {
+    name := "_uniq.96",
+    target := { pp? := .some "1 + 2 = 3" },
+    vars := #[]
+  }
+  [
+    step "goal.start" [("expr", .str "∀ (p: Prop), p → p")]
+     ({ stateId := 0, root := "_uniq.7" }: Protocol.GoalStartResult),
+    -- 1. Omit goalId (defaults to 0)
+    step "goal.tactic" [("stateId", .num 0), ("tactic", .str "intro p h")]
+     ({ nextStateId? := .some 1, goals? := #[goal1] }: Protocol.GoalTacticResult),
+    -- 2. Tactic failure: returns structured message objects with kind, severity, pos, data
+    step "goal.tactic" [("stateId", .num 1), ("tactic", .str "rfl")]
+     ({
+       tacticErrors? := .some #["The rfl tactic failed. Possible reasons:\n- The goal is not a reflexive relation (neither `=` nor a relation with a @[refl] lemma).\n- The arguments of the relation are not equal.\nTry using the reflexivity lemma for your relation explicitly, e.g. `exact Eq.refl _` or\n`exact HEq.rfl` etc.\np : Prop\nh : p\n⊢ p"],
+       messages := #[{
+         kind := "[anonymous]",
+         severity := "error",
+         pos := { line := 0, column := 0 },
+         endPos? := .none,
+         data := "The rfl tactic failed. Possible reasons:\n- The goal is not a reflexive relation (neither `=` nor a relation with a @[refl] lemma).\n- The arguments of the relation are not equal.\nTry using the reflexivity lemma for your relation explicitly, e.g. `exact Eq.refl _` or\n`exact HEq.rfl` etc.\np : Prop\nh : p\n⊢ p"
+       }]
+     }: Protocol.GoalTacticResult),
+    -- 3. Sorry detection: returns hasSorry := true
+    step "goal.tactic" [("stateId", .num 1), ("tactic", .str "sorry")]
+     ({ nextStateId? := .some 2, goals? := .some #[], hasSorry := true }: Protocol.GoalTacticResult),
+    -- 4. Conv mode exits explicitly or when its final goal closes
+    step "goal.start" [("expr", .str "1 + 2 = 3")]
+     ({ stateId := 3, root := "_uniq.96" }: Protocol.GoalStartResult),
+    step "goal.tactic" [("stateId", .num 3), ("mode", .str "conv")]
+     ({ nextStateId? := .some 4, goals? := #[convGoal] }: Protocol.GoalTacticResult),
+    step "goal.tactic" [("stateId", .num 4), ("mode", .str "tactic")]
+     ({ nextStateId? := .some 5, goals? := #[exitedConvGoal] }: Protocol.GoalTacticResult),
+    step "goal.tactic" [("stateId", .num 4), ("tactic", .str "rfl")]
+     ({ nextStateId? := .some 6, goals? := #[exitedConvGoal] }: Protocol.GoalTacticResult),
+  ]
+
+def test_conv_protocol : Test :=
+  [
+    stepGoalStart "(1 + 2) + 3 = 6" 0,
+    stepGoalFragments [("stateId", .num 0), ("mode", .str "conv")] #["conv"],
+    stepGoalFragments [("stateId", .num 1), ("tactic", .str "lhs")] #["conv"],
+    stepGoalFragments [("stateId", .num 2), ("tactic", .str "congr")] #["conv", "conv"],
+    stepGoalFragments [("stateId", .num 3), ("goalId", .num 0), ("tactic", .str "rfl")] #["conv"],
+    stepGoalFragments [("stateId", .num 4), ("goalId", .num 0), ("tactic", .str "rfl")] #["tactic"],
+    stepGoalStart "True" 6,
+    stepGoalFragments [("stateId", .num 6), ("mode", .str "conv")] #["conv"],
+    stepGoalFragments [
+      ("stateId", .num 7), ("have", .str "True"), ("binderName", .str "h")
+    ] #["tactic", "conv"],
+    stepGoalFragments [
+      ("stateId", .num 8), ("goalId", .num 0), ("tactic", .str "trivial")
+    ] #["conv"],
+  ]
+
 def runTest (env: Lean.Environment) (steps: Test): IO LSpec.TestSeq := do
   -- Setup the environment for execution
   let context: Context := {
@@ -250,6 +337,8 @@ def suite (env : Lean.Environment): List (String × IO LSpec.TestSeq) :=
     ("Tactic", test_tactic),
     ("Manual Mode", test_automatic_mode false),
     ("Automatic Mode", test_automatic_mode true),
+    ("Protocol Compatibility", test_protocol_compat),
+    ("Conv Protocol", test_conv_protocol),
     ("env.add env.inspect", test_env_add_inspect),
     -- The source-trace fork intentionally retains combinator and nested
     -- invocations, so the upstream test's exact two-invocation snapshot is no

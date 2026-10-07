@@ -77,6 +77,8 @@ structure Goal where
   userName?: Option String  := .none
   /-- Is the goal in conversion mode -/
   isConversion: Bool        := false
+  /-- Mode / fragment for client compatibility (tactic, conv, calc) -/
+  fragment: String          := "tactic"
   /-- target expression type -/
   target: Expression
   /-- Variables -/
@@ -229,19 +231,42 @@ structure GoalStartResult where
 structure GoalTactic where
   -- Identifiers for tree, state, and goal
   stateId: Nat
-  goalId: Nat := 0
+  goalId?: Option Nat := .none
   -- One of the fields here must be filled
   tactic?: Option String := .none
   expr?: Option String := .none
   have?: Option String := .none
+  let?: Option String := .none
   calc?: Option String := .none
   -- true to enter `conv`, `false` to exit. In case of exit the `goalId` is ignored.
   conv?: Option Bool := .none
+  -- "conv" to enter conv, "tactic" to exit
+  mode?: Option String := .none
 
-  -- In case of the `have` tactic, the new free variable name is provided here
+  -- In case of the `have` or `let` tactic, the new free variable name is provided here
   binderName?: Option String := .none
 
+  -- Client-controlled resumption behavior
+  autoResume?: Option Bool := .none
+
   deriving Lean.FromJson
+
+/-- Structured message matching PyPantograph's Message.parse format -/
+structure MessagePos where
+  line: Nat := 0
+  column: Nat := 0
+  deriving Lean.ToJson, Lean.FromJson, DecidableEq, Repr
+structure Message where
+  kind: String := "[anonymous]"
+  severity: String := "error"
+  pos: MessagePos := {}
+  endPos?: Option MessagePos := .none
+  data: String := ""
+  deriving Lean.ToJson, Lean.FromJson, DecidableEq, Repr
+
+/-- Helper to create an error message from a plain string -/
+def Message.error (s : String) : Message := { severity := "error", data := s }
+
 structure GoalTacticResult where
   -- The next goal state id. Existence of this field shows success
   nextStateId?: Option Nat          := .none
@@ -253,6 +278,13 @@ structure GoalTacticResult where
 
   -- Existence of this field shows the tactic parsing has failed
   parseError?: Option String := .none
+
+  -- Structured diagnostic / error messages from execution
+  messages: Array Message := #[]
+
+  -- Soundness audit flags expected by modern clients
+  hasSorry: Bool := false
+  hasUnsafe: Bool := false
   deriving Lean.ToJson
 structure GoalContinue where
   -- State from which the continuation acquires the context
